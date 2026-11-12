@@ -10,7 +10,8 @@
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",
     "db:format": "prisma format",
-    "db:migrate": "prisma migrate dev"
+    "db:migrate": "prisma migrate dev",
+    "test": "node --test packages/nutrition/test/*.test.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
