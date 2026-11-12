@@ -1,0 +1,229 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+  KITCHEN
+  DELIVERY
+}
+
+enum GoalType {
+  FAT_LOSS
+  MAINTENANCE
+  MUSCLE_GAIN
+  PERFORMANCE
+}
+
+enum ValueClass {
+  FORMULA
+  RANGE
+  OPERATIONAL
+  CALIBRATION
+}
+
+enum EnergyMethod {
+  PUBLISHED
+  ATWATER_GENERAL
+  ATWATER_SPECIFIC
+  MIXED
+}
+
+enum OrderStatus {
+  DRAFT
+  SUBMITTED
+  CONFIRMED
+  IN_PREPARATION
+  READY
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(CUSTOMER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  profile      CustomerProfile?
+  orders       Order[]
+}
+
+model CustomerProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  fullName    String?
+  phone       String?
+  birthDate   DateTime?
+  sexForRmr   String?
+  heightCm    Decimal? @db.Decimal(6, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  measurements BodyMeasurement[]
+  goals       FitnessGoal[]
+}
+
+model BodyMeasurement {
+  id          String   @id @default(cuid())
+  profileId   String
+  measuredAt  DateTime
+  weightKg    Decimal  @db.Decimal(6, 2)
+  bodyFatPct  Decimal? @db.Decimal(5, 2)
+  leanMassKg  Decimal? @db.Decimal(6, 2)
+  device      String?
+  conditions  String?
+  reliability String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  profile     CustomerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  @@index([profileId, measuredAt])
+}
+
+model FitnessGoal {
+  id          String   @id @default(cuid())
+  profileId   String
+  type        GoalType
+  pal         Decimal? @db.Decimal(4, 2)
+  energyDeltaKcal Int?
+  startsAt    DateTime
+  endsAt      DateTime?
+  rationale   String?
+  approvedAt  DateTime?
+  profile     CustomerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  @@index([profileId, startsAt])
+}
+
+model ScientificSource {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  title       String
+  authors     String?
+  publication String?
+  year        Int?
+  doi         String?
+  url         String?
+  versions    ScientificSourceVersion[]
+}
+
+model ScientificSourceVersion {
+  id          String   @id @default(cuid())
+  sourceId    String
+  version     String
+  verifiedAt  DateTime?
+  effectiveAt DateTime?
+  notes       String?
+  source      ScientificSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  @@unique([sourceId, version])
+}
+
+model EnergyCalculation {
+  id              String   @id @default(cuid())
+  profileId       String
+  formulaKey      String
+  formulaVersion  String
+  inputSnapshot   Json
+  rmrKcal         Decimal  @db.Decimal(8, 2)
+  pal             Decimal  @db.Decimal(4, 2)
+  tdeeKcal        Decimal  @db.Decimal(8, 2)
+  targetKcal      Decimal  @db.Decimal(8, 2)
+  valueClass      ValueClass
+  sourceSnapshot  Json
+  createdAt       DateTime @default(now())
+  @@index([profileId, createdAt])
+}
+
+model MacroTarget {
+  id              String   @id @default(cuid())
+  calculationId   String
+  proteinG        Decimal  @db.Decimal(7, 2)
+  fatG            Decimal  @db.Decimal(7, 2)
+  carbohydrateG   Decimal  @db.Decimal(7, 2)
+  fibreG          Decimal? @db.Decimal(7, 2)
+  ruleVersion     String
+  createdAt       DateTime @default(now())
+  calculation    EnergyCalculation @relation(fields: [calculationId], references: [id], onDelete: Cascade)
+}
+
+model Food {
+  id              String   @id @default(cuid())
+  nameAr          String
+  nameFr          String?
+  nameEn          String?
+  edibleState     String
+  energyKcal      Decimal? @db.Decimal(8, 3)
+  proteinG        Decimal? @db.Decimal(8, 3)
+  carbohydrateG   Decimal? @db.Decimal(8, 3)
+  fatG            Decimal? @db.Decimal(8, 3)
+  fibreG          Decimal? @db.Decimal(8, 3)
+  energyMethod    EnergyMethod?
+  sourceKey       String?
+  sourceReference String?
+  reliability     Decimal? @db.Decimal(5, 2)
+  reviewedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  yields          FoodYield[]
+}
+
+model FoodYield {
+  id                 String   @id @default(cuid())
+  foodId             String
+  preparationMethod  String
+  yieldFactor        Decimal  @db.Decimal(7, 4)
+  nutrientRetention  Json?
+  sourceReference    String?
+  food               Food @relation(fields: [foodId], references: [id], onDelete: Cascade)
+  @@unique([foodId, preparationMethod])
+}
+
+model Meal {
+  id          String   @id @default(cuid())
+  nameAr      String
+  nameFr      String?
+  description String?
+  active      Boolean  @default(false)
+  components  MealComponent[]
+}
+
+model MealComponent {
+  id          String   @id @default(cuid())
+  mealId      String
+  foodId      String
+  rawGrams    Decimal  @db.Decimal(8, 2)
+  meal        Meal @relation(fields: [mealId], references: [id], onDelete: Cascade)
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  userId          String
+  status          OrderStatus @default(DRAFT)
+  deliveryDate    DateTime?
+  totalDzd        Int
+  currency        String      @default("DZD")
+  idempotencyKey  String      @unique
+  nutritionSnapshot Json
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  user            User @relation(fields: [userId], references: [id])
+  items           OrderItem[]
+  @@index([status, deliveryDate])
+}
+
+model OrderItem {
+  id              String   @id @default(cuid())
+  orderId         String
+  mealNameSnapshot String
+  quantity        Int
+  rawIngredientSnapshot Json
+  unitPriceDzd    Int
+  order           Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
