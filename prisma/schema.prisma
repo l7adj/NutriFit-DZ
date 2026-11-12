@@ -173,6 +173,7 @@ model Food {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   yields          FoodYield[]
+  components      MealComponent[]
 }
 
 model FoodYield {
@@ -201,6 +202,7 @@ model MealComponent {
   foodId      String
   rawGrams    Decimal  @db.Decimal(8, 2)
   meal        Meal @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  food        Food @relation(fields: [foodId], references: [id])
 }
 
 model Order {
