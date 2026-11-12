@@ -138,6 +138,7 @@ model EnergyCalculation {
   valueClass      ValueClass
   sourceSnapshot  Json
   createdAt       DateTime @default(now())
+  macroTargets    MacroTarget[]
   @@index([profileId, createdAt])
 }
 
