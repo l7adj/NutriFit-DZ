@@ -21,7 +21,7 @@ test("macro calculation allocates remaining energy to carbohydrate", () => {
   const result = calculateMacroTargets({ targetKcal: 2400, weightKg: 75, proteinGPerKg: 1.6, fatEnergyRatio: 0.25 });
   assert.equal(result.proteinG, 120);
   assert.equal(result.fatG, 66.7);
-  assert.equal(result.carbohydrateG, 338.3);
+  assert.equal(result.carbohydrateG, 330);
 });
 
 test("invalid PAL is rejected instead of silently defaulted", () => {
