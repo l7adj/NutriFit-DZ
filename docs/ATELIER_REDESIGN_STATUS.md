@@ -13,3 +13,6 @@ This branch contains a customer experience rebuild, not a production release.
 
 ## Verification gate
 Do not merge until TypeScript, unit tests, mobile/desktop interaction review, and API-backed order flow are verified. Cloudflare Pages preview success only confirms the static frontend build; it does not validate the backend, database, nutrition data governance, pricing, delivery capacity, or real order operations.
+
+
+Last implementation adjustment: the reduced-motion rules use standard duration overrides without `!important` declarations.
