@@ -61,7 +61,7 @@ export const CartView: React.FC<CartViewProps> = ({
 
   if (res.err) {
     return (
-      <div className="bg-[#1a1111] border border-[#b86157]/50 rounded-2xl p-4 text-sm text-[#f3f1ec]">
+      <div className="bg-[var(--danger-soft)] border border-[#b86157]/50 rounded-2xl p-4 text-sm text-[var(--ink-primary)]">
         {res.err}
       </div>
     );
@@ -316,12 +316,12 @@ export const CartView: React.FC<CartViewProps> = ({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-[#f3f1ec]">السلة وتأكيد الطلب</h1>
+        <h1 className="text-2xl font-bold text-[var(--ink-primary)]">السلة وتأكيد الطلب</h1>
         {state.meals.length > 0 && (
           <button
             type="button"
             onClick={handleAutoDistribute}
-            className="touch-press px-3 py-1.5 rounded-xl bg-[#18181c] border border-[#c8a96e]/40 text-xs font-bold text-[#e6d1a3] flex items-center gap-1.5 cursor-pointer hover:bg-[#1c1a15]"
+            className="touch-press px-3 py-1.5 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-strong)]/40 text-xs font-bold text-[var(--brand)] flex items-center gap-1.5 cursor-pointer hover:bg-[var(--bg-subtle)]"
           >
             <Sparkles className="w-3.5 h-3.5" />
             توازن تلقائي
@@ -330,28 +330,28 @@ export const CartView: React.FC<CartViewProps> = ({
       </div>
 
       {apiEnabled ? (
-        <div className="rounded-xl border border-[#6b9c7e]/35 bg-[#121a15] px-4 py-3 text-[11px] leading-6 text-[#cbe3d3]" role="status">
-          <strong className="text-[#6b9c7e]">طلب متصل بالخادم:</strong>{' '}
+        <div className="rounded-xl border border-[var(--success)]/35 bg-[var(--success-soft)] px-4 py-3 text-[11px] leading-6 text-[var(--success)]" role="status">
+          <strong className="text-[var(--success)]">طلب متصل بالخادم:</strong>{' '}
           يتم حساب الأسعار والقيم الغذائية والتحقق من الطاقة الاستيعابية ومسببات الحساسية على الخادم، والدفع نقداً عند الاستلام.
         </div>
       ) : (
-        <div className="rounded-xl border border-[#c8a96e]/25 bg-[#18181c] px-4 py-3 text-[11px] leading-6 text-[#96938a]" role="status">
-          <strong className="text-[#e6d1a3]">نسخة معاينة:</strong>{' '}
+        <div className="rounded-xl border border-[var(--border-strong)]/25 bg-[var(--bg-subtle)] px-4 py-3 text-[11px] leading-6 text-[var(--ink-secondary)]" role="status">
+          <strong className="text-[var(--brand)]">نسخة معاينة:</strong>{' '}
           يمكنك اختبار توزيع الوجبات والتكلفة وحفظ طلب تجريبي على هذا الجهاز فقط.
           لا يُرسل الطلب إلى مطبخ فعلي ولا يحجز موعد توصيل.
         </div>
       )}
 
       {state.meals.length === 0 ? (
-        <div className="bg-[#111114] border border-[#232329] rounded-2xl p-8 text-center space-y-3">
-          <div className="text-sm font-bold text-[#f3f1ec]">سلة وجبات الغد فارغة</div>
-          <p className="text-xs text-[#96938a]">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center space-y-3">
+          <div className="text-sm font-bold text-[var(--ink-primary)]">سلة وجبات الغد فارغة</div>
+          <p className="text-xs text-[var(--ink-secondary)]">
             اختر أطباقًا مختلفة للوجبة الصباحية وبعد التمرين والعشاء من القائمة.
           </p>
           <button
             type="button"
             onClick={() => onNavigate('menu')}
-            className="touch-press px-6 py-3 rounded-xl font-bold text-sm text-[#141108] bg-gradient-to-l from-[#e6d1a3] to-[#c8a96e] cursor-pointer"
+            className="touch-press px-6 py-3 rounded-xl font-bold text-sm text-[#141108] bg-gradient-to-l from-[var(--brand)] to-[var(--brand)] cursor-pointer"
           >
             تصفح الوجبات
           </button>
@@ -361,7 +361,7 @@ export const CartView: React.FC<CartViewProps> = ({
           {/* Left Column: Macro Bars + Daily Meal Sections */}
           <div className="lg:col-span-7 space-y-4">
             {/* Purposeful Executive Macro Bars */}
-            <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 space-y-2.5">
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 space-y-2.5">
               {[
                 { label: 'سعرات', val: totals.kcal, target: res.kcal, barColor: '#c8a96e', unit: '' },
                 { label: 'بروتين', val: totals.p, target: res.fp, barColor: '#e6d1a3', unit: 'غ' },
@@ -371,14 +371,14 @@ export const CartView: React.FC<CartViewProps> = ({
                 const pct = b.target > 0 ? clamp((b.val / b.target) * 100, 0, 100) : 0;
                 return (
                   <div key={b.label} className="flex items-center gap-3 text-xs">
-                    <span className="w-12 text-[#96938a] font-medium">{b.label}</span>
-                    <div className="flex-1 h-1.5 bg-[#18181c] rounded-full overflow-hidden">
+                    <span className="w-12 text-[var(--ink-secondary)] font-medium">{b.label}</span>
+                    <div className="flex-1 h-1.5 bg-[var(--bg-subtle)] rounded-full overflow-hidden">
                       <div
                         className="h-full rounded-full transition-all duration-300"
                         style={{ width: `${pct}%`, backgroundColor: b.barColor }}
                       />
                     </div>
-                    <span className="w-24 text-left font-bold text-[#f3f1ec] tabular-nums">
+                    <span className="w-24 text-left font-bold text-[var(--ink-primary)] tabular-nums">
                       {round0(b.val)} / {round0(b.target)}{b.unit}
                     </span>
                   </div>
@@ -387,10 +387,10 @@ export const CartView: React.FC<CartViewProps> = ({
             </div>
 
             {/* Daily Meals Count Control */}
-            <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 flex items-center justify-between gap-3">
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 flex items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-bold text-[#f3f1ec]">تقسيم وجبات اليوم</div>
-                <div className="text-xs text-[#96938a] mt-0.5">
+                <div className="text-sm font-bold text-[var(--ink-primary)]">تقسيم وجبات اليوم</div>
+                <div className="text-xs text-[var(--ink-secondary)] mt-0.5">
                   كل وجبة لها أطباقها الخاصة (صباحية، بعد التمرين، عشاء...)
                 </div>
               </div>
@@ -410,12 +410,12 @@ export const CartView: React.FC<CartViewProps> = ({
                       })),
                     }));
                   }}
-                  className="touch-press w-9 h-9 rounded-xl bg-[#18181c] border border-[#232329] flex items-center justify-center text-[#f3f1ec] disabled:opacity-35 cursor-pointer"
+                  className="touch-press w-9 h-9 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border)] flex items-center justify-center text-[var(--ink-primary)] disabled:opacity-35 cursor-pointer"
                   aria-label="تقليل وجبة"
                 >
                   <Minus className="w-4 h-4" />
                 </button>
-                <span className="text-sm font-bold text-[#e6d1a3] tabular-nums w-8 text-center">
+                <span className="text-sm font-bold text-[var(--brand)] tabular-nums w-8 text-center">
                   {state.n}
                 </span>
                 <button
@@ -424,7 +424,7 @@ export const CartView: React.FC<CartViewProps> = ({
                   onClick={() =>
                     onUpdate((prev) => ({ ...prev, n: Math.min(5, prev.n + 1) }))
                   }
-                  className="touch-press w-9 h-9 rounded-xl bg-[#18181c] border border-[#232329] flex items-center justify-center text-[#f3f1ec] disabled:opacity-35 cursor-pointer"
+                  className="touch-press w-9 h-9 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border)] flex items-center justify-center text-[var(--ink-primary)] disabled:opacity-35 cursor-pointer"
                   aria-label="إضافة وجبة"
                 >
                   <Plus className="w-4 h-4" />
@@ -452,28 +452,28 @@ export const CartView: React.FC<CartViewProps> = ({
                 return (
                   <div
                     key={slotIdx}
-                    className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 space-y-2.5"
+                    className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 space-y-2.5"
                   >
-                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#232329]">
+                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-[var(--border)]">
                       <input
                         type="text"
                         value={getMealSlotName(state, slotIdx)}
                         onChange={(e) => updateMealName(slotIdx, e.target.value)}
-                        className="bg-transparent text-sm font-bold text-[#e6d1a3] focus:outline-none focus:border-b focus:border-[#c8a96e] min-w-0 flex-1"
+                        className="bg-transparent text-sm font-bold text-[var(--brand)] focus:outline-none focus:border-b focus:border-[var(--border-strong)] min-w-0 flex-1"
                         aria-label={`اسم الوجبة ${slotIdx + 1}`}
                       />
-                      <div className="text-xs text-[#96938a] tabular-nums shrink-0">
-                        {round0(slotTotals.kcal)} kcal · <span className="text-[#c8a96e]">P{round0(slotTotals.p)}</span>
+                      <div className="text-xs text-[var(--ink-secondary)] tabular-nums shrink-0">
+                        {round0(slotTotals.kcal)} kcal · <span className="text-[var(--accent)]">P{round0(slotTotals.p)}</span>
                       </div>
                     </div>
 
                     {slotMeals.length === 0 ? (
-                      <div className="flex items-center justify-between py-2 text-xs text-[#66645e]">
+                      <div className="flex items-center justify-between py-2 text-xs text-[var(--ink-tertiary)]">
                         <span>لا توجد أصناف مخصصة لهذه الوجبة بعد.</span>
                         <button
                           type="button"
                           onClick={() => onSelectMealSlot(slotIdx)}
-                          className="touch-press text-[#c8a96e] font-semibold hover:underline cursor-pointer"
+                          className="touch-press text-[var(--accent)] font-semibold hover:underline cursor-pointer"
                         >
                           + أضف طبقًا
                         </button>
@@ -514,20 +514,20 @@ export const CartView: React.FC<CartViewProps> = ({
                               className="py-2.5 flex flex-wrap sm:flex-nowrap items-center gap-2"
                             >
                               <div className="flex-1 min-w-[140px]">
-                                <div className="text-xs sm:text-sm font-semibold text-[#f3f1ec]">
+                                <div className="text-xs sm:text-sm font-semibold text-[var(--ink-primary)]">
                                   {name}
                                 </div>
                                 {customBreakdown && (
-                                  <div className="text-[11px] text-[#96938a] mt-0.5 leading-relaxed">
+                                  <div className="text-[11px] text-[var(--ink-secondary)] mt-0.5 leading-relaxed">
                                     {customBreakdown}
                                   </div>
                                 )}
-                                <div className="text-[11px] text-[#96938a] tabular-nums mt-0.5">
+                                <div className="text-[11px] text-[var(--ink-secondary)] tabular-nums mt-0.5">
                                   {round0(mac.kcal)} kcal ·{' '}
-                                  <span className="text-[#c8a96e]">P{round0(mac.p)}</span>{' '}
-                                  <span className="text-[#6b9c7e]">C{round0(mac.c)}</span>{' '}
+                                  <span className="text-[var(--accent)]">P{round0(mac.p)}</span>{' '}
+                                  <span className="text-[var(--success)]">C{round0(mac.c)}</span>{' '}
                                   <span className="text-[#a98c72]">F{round0(mac.f)}</span> ·{' '}
-                                  <span className="text-[#e6d1a3] font-bold">{round1(mac.price)} دج</span>
+                                  <span className="text-[var(--brand)] font-bold">{round1(mac.price)} دج</span>
                                 </div>
                               </div>
 
@@ -545,14 +545,14 @@ export const CartView: React.FC<CartViewProps> = ({
                                         ),
                                       }));
                                     }}
-                                    className="w-16 bg-[#18181c] border border-[#232329] rounded-lg px-2 py-1 text-center text-xs text-[#f3f1ec] tabular-nums focus:border-[#c8a96e] outline-none"
+                                    className="w-16 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-lg px-2 py-1 text-center text-xs text-[var(--ink-primary)] tabular-nums focus:border-[var(--border-strong)] outline-none"
                                   />
-                                  <span className="text-[11px] text-[#66645e]">
+                                  <span className="text-[11px] text-[var(--ink-tertiary)]">
                                     {isJuice ? 'مل' : 'غ'}
                                   </span>
                                 </div>
                               ) : (
-                                <span className="text-xs text-[#96938a] px-2 tabular-nums">
+                                <span className="text-xs text-[var(--ink-secondary)] px-2 tabular-nums">
                                   {m.kind === 'dish'
                                     ? m.mult === 0.75
                                       ? 'حصة خفيفة'
@@ -574,7 +574,7 @@ export const CartView: React.FC<CartViewProps> = ({
                                     ),
                                   }));
                                 }}
-                                className="bg-[#18181c] border border-[#232329] rounded-lg px-2 py-1.5 text-[11px] text-[#f3f1ec] max-w-[135px]"
+                                className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-[11px] text-[var(--ink-primary)] max-w-[135px]"
                               >
                                 {Array.from({ length: state.n }, (_, s) => (
                                   <option key={s} value={s}>
@@ -586,7 +586,7 @@ export const CartView: React.FC<CartViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => removeItem(m.uid)}
-                                className="touch-press p-1.5 text-[#96938a] hover:text-[#b86157] rounded-lg cursor-pointer"
+                                className="touch-press p-1.5 text-[var(--ink-secondary)] hover:text-[var(--danger)] rounded-lg cursor-pointer"
                                 aria-label="حذف"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -601,20 +601,20 @@ export const CartView: React.FC<CartViewProps> = ({
               })}
             </div>
 
-            <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5">
-              <div className="text-sm font-bold text-[#f3f1ec] mb-3">ملخص توزيع اليوم</div>
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+              <div className="text-sm font-bold text-[var(--ink-primary)] mb-3">ملخص توزيع اليوم</div>
               <MealSlotsSummary state={state} onSelectSlot={onSelectMealSlot} />
             </div>
           </div>
 
           {/* Right Column: Delivery Zone, Note & Transparent Invoice */}
           <div className="lg:col-span-5 space-y-4">
-            <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 space-y-4">
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 space-y-4">
               <div>
-                <div className="text-sm font-bold text-[#f3f1ec] mb-2">منطقة التوصيل أو الاستلام</div>
+                <div className="text-sm font-bold text-[var(--ink-primary)] mb-2">منطقة التوصيل أو الاستلام</div>
                 <div className="space-y-2">
                   {zoneOptions.length === 0 ? (
-                    <div className="rounded-xl border border-[#b86157]/40 bg-[#1a1111] p-3 text-xs leading-6 text-[#e6b4aa]">
+                    <div className="rounded-xl border border-[#b86157]/40 bg-[var(--danger-soft)] p-3 text-xs leading-6 text-[#e6b4aa]">
                       لا توجد حالياً منطقة توصيل أو نقطة استلام معتمدة. يمكنك مواصلة معاينة الوجبات، لكن تأكيد الطلب متوقف حتى اعتماد نطاق الخدمة.
                     </div>
                   ) : zoneOptions.map((z) => {
@@ -626,17 +626,17 @@ export const CartView: React.FC<CartViewProps> = ({
                         onClick={() => onUpdate((prev) => ({ ...prev, zoneId: z.id }))}
                         className={`touch-press w-full text-right p-3 rounded-xl border cursor-pointer ${
                           active
-                            ? 'bg-[#1c1a15] border-[#c8a96e]'
-                            : 'bg-[#18181c] border-[#232329] hover:border-[#c8a96e]/40'
+                            ? 'bg-[var(--bg-subtle)] border-[var(--border-strong)]'
+                            : 'bg-[var(--bg-subtle)] border-[var(--border)] hover:border-[var(--border-strong)]/40'
                         }`}
                       >
                         <div className="flex items-center justify-between text-xs font-bold">
-                          <span className="text-[#f3f1ec]">{z.title}</span>
-                          <span className="text-[#c8a96e] tabular-nums">
+                          <span className="text-[var(--ink-primary)]">{z.title}</span>
+                          <span className="text-[var(--accent)] tabular-nums">
                             {z.fee === 0 ? 'مجاني' : `${z.fee} دج`}
                           </span>
                         </div>
-                        <div className="text-[11px] text-[#96938a] mt-0.5">
+                        <div className="text-[11px] text-[var(--ink-secondary)] mt-0.5">
                           {z.areas} · {z.hours}
                         </div>
                       </button>
@@ -646,7 +646,7 @@ export const CartView: React.FC<CartViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-[#96938a] mb-1.5">
+                <label className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1.5">
                   ملاحظة للمطبخ (اختياري)
                 </label>
                 <input
@@ -656,46 +656,46 @@ export const CartView: React.FC<CartViewProps> = ({
                     onUpdate((prev) => ({ ...prev, orderNote: e.target.value }))
                   }
                   placeholder="مثال: قليل الملح، بدون بصل..."
-                  className="w-full bg-[#18181c] border border-[#232329] rounded-xl px-3 py-2.5 text-xs text-[#f3f1ec] focus:border-[#c8a96e] outline-none"
+                  className="w-full bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-xs text-[var(--ink-primary)] focus:border-[var(--border-strong)] outline-none"
                 />
               </div>
 
-              <div className="pt-3 border-t border-[#232329] space-y-2 text-xs">
-                <div className="text-sm font-bold text-[#f3f1ec] mb-1">تفصيل السعر بشفافية</div>
-                <div className="flex justify-between text-[#96938a]">
+              <div className="pt-3 border-t border-[var(--border)] space-y-2 text-xs">
+                <div className="text-sm font-bold text-[var(--ink-primary)] mb-1">تفصيل السعر بشفافية</div>
+                <div className="flex justify-between text-[var(--ink-secondary)]">
                   <span>مكونات بسعر السوق</span>
-                  <span className="font-bold text-[#f3f1ec] tabular-nums">{pricing.ing} دج</span>
+                  <span className="font-bold text-[var(--ink-primary)] tabular-nums">{pricing.ing} دج</span>
                 </div>
-                <div className="flex justify-between text-[#96938a]">
+                <div className="flex justify-between text-[var(--ink-secondary)]">
                   <span>مناولة معلنة ({pricingCfg.handlingPct}%)</span>
-                  <span className="font-bold text-[#f3f1ec] tabular-nums">{pricing.handling} دج</span>
+                  <span className="font-bold text-[var(--ink-primary)] tabular-nums">{pricing.handling} دج</span>
                 </div>
-                <div className="flex justify-between text-[#96938a]">
+                <div className="flex justify-between text-[var(--ink-secondary)]">
                   <span>
                     أجر الخدمة ({pricingCfg.serviceFeePerMeal} دج × {state.n} وجبات)
                   </span>
-                  <span className="font-bold text-[#f3f1ec] tabular-nums">{pricing.service} دج</span>
+                  <span className="font-bold text-[var(--ink-primary)] tabular-nums">{pricing.service} دج</span>
                 </div>
-                <div className="flex justify-between text-[#96938a]">
+                <div className="flex justify-between text-[var(--ink-secondary)]">
                   <span>التوصيل ({selectedZone.title})</span>
-                  <span className="font-bold text-[#f3f1ec] tabular-nums">
+                  <span className="font-bold text-[var(--ink-primary)] tabular-nums">
                     {pricing.delivery === 0 ? 'مجاني' : `${pricing.delivery} دج`}
                   </span>
                 </div>
-                <div className="flex justify-between items-baseline pt-2.5 border-t border-[#232329]">
-                  <span className="text-sm font-bold text-[#f3f1ec]">الإجمالي</span>
-                  <span className="text-xl font-bold text-[#e6d1a3] tabular-nums">
+                <div className="flex justify-between items-baseline pt-2.5 border-t border-[var(--border)]">
+                  <span className="text-sm font-bold text-[var(--ink-primary)]">الإجمالي</span>
+                  <span className="text-xl font-bold text-[var(--brand)] tabular-nums">
                     {pricing.total} دج
                   </span>
                 </div>
               </div>
 
-              <div className="bg-[#18181c] border border-[#232329] rounded-xl p-3 text-xs text-[#c8a96e] font-medium">
+              <div className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-3 text-xs text-[var(--accent)] font-medium">
                 ربحنا هو أجر الخدمة فقط. الطعام بسعر السوق.
               </div>
 
-              <div className="text-[11px] text-[#96938a]">
-                <span className="text-[#c89a56]">
+              <div className="text-[11px] text-[var(--ink-secondary)]">
+                <span className="text-[var(--warning)]">
                   {apiEnabled ? 'موعد التسليم المتوقع:' : 'موعد تجريبي غير محجوز:'}
                 </span>{' '}
                 {formatArabicDate(dlv.date)}
@@ -706,7 +706,7 @@ export const CartView: React.FC<CartViewProps> = ({
                 type="button"
                 onClick={() => void handlePlaceOrder()}
                 disabled={activeZones.length === 0 || submitting}
-                className="touch-press w-full py-3.5 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl font-bold text-[#141108] bg-gradient-to-l from-[#e6d1a3] to-[#c8a96e] hover:brightness-105 cursor-pointer"
+                className="touch-press w-full py-3.5 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl font-bold text-[#141108] bg-gradient-to-l from-[var(--brand)] to-[var(--brand)] hover:brightness-105 cursor-pointer"
               >
                 {submitting ? 'جارٍ إرسال الطلب...' : `تأكيد الطلب (${pricing.total} دج)`}
               </button>
@@ -716,32 +716,32 @@ export const CartView: React.FC<CartViewProps> = ({
       )}
 
       {/* My Orders History */}
-      <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 space-y-3">
-        <h2 className="text-sm font-bold text-[#f3f1ec]">طلباتي</h2>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 space-y-3">
+        <h2 className="text-sm font-bold text-[var(--ink-primary)]">طلباتي</h2>
         {state.ord.length === 0 ? (
-          <div className="text-xs text-[#66645e]">لا توجد طلبات مسجّلة بعد.</div>
+          <div className="text-xs text-[var(--ink-tertiary)]">لا توجد طلبات مسجّلة بعد.</div>
         ) : (
           <div className="space-y-2">
             {[...state.ord].reverse().map((o) => (
               <div
                 key={o.id}
-                className="bg-[#18181c] border border-[#232329] rounded-xl p-3 flex items-center justify-between gap-3"
+                className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-3 flex items-center justify-between gap-3"
               >
                 <div>
-                  <div className="text-xs sm:text-sm font-bold text-[#f3f1ec]">
-                    {formatArabicDate(o.date)} · <span className="text-[#96938a] tabular-nums">{o.id}</span>
+                  <div className="text-xs sm:text-sm font-bold text-[var(--ink-primary)]">
+                    {formatArabicDate(o.date)} · <span className="text-[var(--ink-secondary)] tabular-nums">{o.id}</span>
                   </div>
-                  <div className="text-[11px] text-[#96938a] tabular-nums mt-0.5">
+                  <div className="text-[11px] text-[var(--ink-secondary)] tabular-nums mt-0.5">
                     {o.n} وجبات · {o.zoneTitle} · {o.kcal} kcal ·{' '}
-                    <b className="text-[#e6d1a3]">{o.total} دج</b>
+                    <b className="text-[var(--brand)]">{o.total} دج</b>
                   </div>
                   <div
                     className={`text-[11px] font-bold mt-1 flex flex-wrap items-center gap-2 ${
                       o.status === 'C'
-                        ? 'text-[#6b9c7e]'
+                        ? 'text-[var(--success)]'
                         : o.status === 'W'
-                          ? 'text-[#c89a56]'
-                          : 'text-[#b86157]'
+                          ? 'text-[var(--warning)]'
+                          : 'text-[var(--danger)]'
                     }`}
                   >
                     <span>
@@ -753,8 +753,8 @@ export const CartView: React.FC<CartViewProps> = ({
                     </span>
                     {o.status === 'C' && o.productionStage && (
                       <>
-                        <span className="text-[#66645e]" aria-hidden="true">·</span>
-                        <span className="text-[#e6d1a3] text-[11px]">
+                        <span className="text-[var(--ink-tertiary)]" aria-hidden="true">·</span>
+                        <span className="text-[var(--brand)] text-[11px]">
                           {STAGE_LABELS[o.productionStage] ?? o.productionStage}
                         </span>
                       </>
@@ -765,7 +765,7 @@ export const CartView: React.FC<CartViewProps> = ({
                   <button
                     type="button"
                     onClick={() => void cancelOrder(o)}
-                    className="touch-press px-3 py-1.5 rounded-lg border border-[#3d2321] bg-[#1a1111] text-xs font-bold text-[#b86157] cursor-pointer"
+                    className="touch-press px-3 py-1.5 rounded-lg border border-[#3d2321] bg-[var(--danger-soft)] text-xs font-bold text-[var(--danger)] cursor-pointer"
                   >
                     إلغاء
                   </button>
@@ -782,22 +782,22 @@ export const CartView: React.FC<CartViewProps> = ({
           onClick={() => setConfirmModal(null)}
         >
           <div
-            className="w-full max-w-md bg-[#111114] border border-[#c8a96e]/50 rounded-2xl p-6 text-center space-y-4 shadow-2xl"
+            className="w-full max-w-md bg-[var(--surface)] border border-[var(--border-strong)]/50 rounded-2xl p-6 text-center space-y-4 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-center">
               {confirmModal.status === 'C' ? (
-                <CheckCircle2 className="w-11 h-11 text-[#6b9c7e]" />
+                <CheckCircle2 className="w-11 h-11 text-[var(--success)]" />
               ) : (
-                <Clock className="w-11 h-11 text-[#c89a56]" />
+                <Clock className="w-11 h-11 text-[var(--warning)]" />
               )}
             </div>
-            <h3 className="text-lg font-bold text-[#f3f1ec]">
+            <h3 className="text-lg font-bold text-[var(--ink-primary)]">
               {apiEnabled
                 ? confirmModal.status === 'C' ? 'تم تسجيل طلبك بنجاح' : 'تم تسجيل طلبك في قائمة الانتظار'
                 : confirmModal.status === 'C' ? 'تم حفظ طلب المعاينة' : 'تم حفظ طلب المعاينة في قائمة الانتظار'}
             </h3>
-            <p className="text-xs text-[#96938a] leading-relaxed">
+            <p className="text-xs text-[var(--ink-secondary)] leading-relaxed">
               {apiEnabled
                 ? confirmModal.status === 'C'
                   ? 'تم تسجيل الطلب في قاعدة بيانات الخدمة. سيظهر لفريق التشغيل وفق السعة المعتمدة، وتبقى حالة الدفع نقداً عند الاستلام.'
@@ -806,9 +806,9 @@ export const CartView: React.FC<CartViewProps> = ({
                   ? 'هذا سجل معاينة محفوظ على هذا الجهاز فقط؛ لم يُرسل إلى المطبخ ولم يُنشأ توصيل فعلي.'
                   : 'هذه محاكاة محلية لقائمة الانتظار؛ لا توجد خدمة إرسال أو إشعارات للمطبخ.'}
             </p>
-            <div className="bg-[#18181c] border border-[#232329] rounded-xl p-3 text-xs flex justify-between tabular-nums">
-              <span className="text-[#96938a]">رقم الطلب: {confirmModal.id}</span>
-              <span className="text-[#e6d1a3] font-bold">{confirmModal.total} دج</span>
+            <div className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-3 text-xs flex justify-between tabular-nums">
+              <span className="text-[var(--ink-secondary)]">رقم الطلب: {confirmModal.id}</span>
+              <span className="text-[var(--brand)] font-bold">{confirmModal.total} دج</span>
             </div>
             <button
               type="button"
@@ -816,7 +816,7 @@ export const CartView: React.FC<CartViewProps> = ({
                 setConfirmModal(null);
                 onNavigate('home');
               }}
-              className="touch-press w-full py-3 rounded-xl font-bold text-[#141108] bg-gradient-to-l from-[#e6d1a3] to-[#c8a96e] cursor-pointer"
+              className="touch-press w-full py-3 rounded-xl font-bold text-[#141108] bg-gradient-to-l from-[var(--brand)] to-[var(--brand)] cursor-pointer"
             >
               العودة إلى شاشة اليوم
             </button>
