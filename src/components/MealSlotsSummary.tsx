@@ -8,7 +8,7 @@ import {
   round0,
 } from '../utils/nutrition';
 
-const SLOT_TONES = ['#c8a96e', '#6b9c7e', '#e6d1a3', '#a98c72', '#96938a'];
+const SLOT_TONES = ['var(--accent)', 'var(--success)', 'var(--accent-strong)', 'var(--fat)', 'var(--ink-secondary)'];
 
 interface MealSlotsSummaryProps {
   state: AppState;
@@ -51,7 +51,7 @@ export const MealSlotsSummary: React.FC<MealSlotsSummaryProps> = ({ state, onSel
   return (
     <div className="space-y-3">
       {totalKcal > 0 && (
-        <div className="h-1.5 w-full rounded-full overflow-hidden bg-[#18181c] flex">
+        <div className="h-1.5 w-full rounded-full overflow-hidden bg-[var(--bg-subtle)] flex">
           {slots.map((s, idx) => {
             const pct = (s.kcal / totalKcal) * 100;
             if (pct <= 0) return null;
@@ -69,7 +69,7 @@ export const MealSlotsSummary: React.FC<MealSlotsSummaryProps> = ({ state, onSel
         </div>
       )}
 
-      <div className="divide-y divide-[#232329] bg-[#18181c] border border-[#232329] rounded-xl px-3">
+      <div className="divide-y divide-[var(--border)] bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl px-3">
         {slots.map((s, idx) => {
           const pct = totalKcal > 0 ? round0((s.kcal / totalKcal) * 100) : 0;
           const tone = SLOT_TONES[idx % SLOT_TONES.length];
@@ -84,7 +84,7 @@ export const MealSlotsSummary: React.FC<MealSlotsSummaryProps> = ({ state, onSel
                   }
                 : {})}
               className={`w-full text-right py-3 block ${
-                onSelectSlot ? 'touch-press hover:bg-[#1e1e24] -mx-1.5 px-1.5 rounded-lg cursor-pointer' : ''
+                onSelectSlot ? 'touch-press hover:bg-[var(--bg-subtle)] -mx-1.5 px-1.5 rounded-lg cursor-pointer' : ''
               }`}
             >
               <div className="flex items-center justify-between gap-2">
@@ -95,26 +95,26 @@ export const MealSlotsSummary: React.FC<MealSlotsSummaryProps> = ({ state, onSel
                   >
                     0{idx + 1}.
                   </span>
-                  <span className="text-xs font-bold text-[#f3f1ec] truncate">
+                  <span className="text-xs font-bold text-[var(--ink-primary)] truncate">
                     {getMealSlotName(state, idx)}
                   </span>
                   {totalKcal > 0 && (
-                    <span className="text-[11px] text-[#96938a] tabular-nums shrink-0">
+                    <span className="text-[11px] text-[var(--ink-secondary)] tabular-nums shrink-0">
                       {pct}%
                     </span>
                   )}
                 </div>
                 <div className="text-xs font-bold tabular-nums shrink-0">
-                  <span className="text-[#e6d1a3]">{round0(s.kcal)} kcal</span>
-                  <span className="text-[#66645e] mx-1">·</span>
-                  <span className="text-[#c8a96e]">P{round0(s.p)}</span>
-                  <span className="text-[#66645e] mx-1">·</span>
-                  <span className="text-[#6b9c7e]">C{round0(s.c)}</span>
-                  <span className="text-[#66645e] mx-1">·</span>
-                  <span className="text-[#a98c72]">F{round0(s.f)}</span>
+                  <span className="text-[var(--accent-strong)]">{round0(s.kcal)} kcal</span>
+                  <span className="text-[var(--ink-tertiary)] mx-1">·</span>
+                  <span className="text-[var(--accent)]">P{round0(s.p)}</span>
+                  <span className="text-[var(--ink-tertiary)] mx-1">·</span>
+                  <span className="text-[var(--success)]">C{round0(s.c)}</span>
+                  <span className="text-[var(--ink-tertiary)] mx-1">·</span>
+                  <span className="text-[var(--fat)]">F{round0(s.f)}</span>
                 </div>
               </div>
-              <div className="text-[11px] text-[#96938a] mt-1 leading-relaxed">
+              <div className="text-[11px] text-[var(--ink-secondary)] mt-1 leading-relaxed">
                 {s.labels.length > 0
                   ? s.labels.join(' · ')
                   : onSelectSlot
