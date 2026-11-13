@@ -1,45 +1,90 @@
 # NutriFit DZ
 
-A science-led, made-to-order sports nutrition platform for Algeria.
+تجربة تغذية رياضية ووجبات موزونة بالغرام، مصممة حول بيانات العميل وهدفه وتوزيع يومه.
 
-> Product principle: calculate first, prepare only after a confirmed order. Meals are not pre-cooked or stocked.
+> **الحالة الحالية: معاينة محلية + نواة خادم قابلة للنشر.**  
+> الوضع الافتراضي ما زال معاينة محلية تحفظ بياناتها على الجهاز. أُضيفت API وPostgreSQL ومصادقة وصلاحيات ومسارات الطلبات والمطبخ والتوصيل، لكنها لا تصبح خدمة حقيقية حتى تُنشر وتُربط بقاعدة بيانات وتُهيأ الأسرار والكتالوج التشغيلي. لا يوجد حتى الآن دفع إلكتروني أو مزود توصيل متكامل. بيانات الأغذية المحلية التجريبية غير معتمدة تجارياً.
 
-## Current status
+## تشغيل المشروع
 
-**Foundation / MVP scaffold.** The repository is being built in small, auditable stages. Scientific calculations must be deterministic, versioned, source-attributed, and covered by tests before they are used for customer orders.
+المتطلبات: Node.js 22 أو أحدث و npm.
 
-## Product scope
+~~~bash
+npm install
+npm run dev
+~~~
 
-- Arabic RTL-first customer experience, with room for French and English.
-- DZD pricing and Africa/Algiers timezone.
-- Customer profile, measurements, goal and activity inputs.
-- Evidence-based energy and macronutrient calculation.
-- Food composition records with provenance and preparation state.
-- Pre-orders for next-day preparation and delivery.
-- Admin workflow for reviewing orders and approving sensitive adjustments.
-- Online operation with explicitly designed offline-tolerant customer flows.
-- Cash on delivery in the initial release; no payment gateway in v1.
+لفحص الأنواع والاختبارات وبناء نسخة الإنتاج:
 
-## Architecture
+\`\`\`bash
+npm run lint
+npm test
+npm run build
+\`\`\`
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/SCIENTIFIC_RULES.md](docs/SCIENTIFIC_RULES.md), and [docs/ROADMAP.md](docs/ROADMAP.md).
+## تشغيل النسخة المتصلة
 
-Planned stack: Next.js App Router + TypeScript, PostgreSQL + Prisma, shared deterministic nutrition/pricing/order packages, and a separate admin application.
+راجع [دليل نشر الخادم وإعداد التشغيل](docs/BACKEND_DEPLOYMENT.md). يتضمن المستودع الآن:
+- Express API مع JWT وتحديد الأدوار (عميل/إدارة/مطبخ/توصيل).
+- PostgreSQL migrations وسجل تدقيق.
+- إعادة احتساب الأسعار والماكروز والتحقق من الحساسية والسعة على الخادم عند الطلب.
+- لوحة عمليات متصلة لإدارة الأغذية والوصفات والمناطق والسعة ومراحل المطبخ والتوصيل.
+- تسجيل دخول وإنشاء حساب للعميل، ومزامنة الملف الغذائي وسجل الطلبات عند تفعيل API.
 
-## Non-negotiable engineering rules
+لتفعيل الوضع المتصل أثناء البناء، اضبط `VITE_API_ENABLED=true`، وأكمل متغيرات الخادم في `.env`. لا تفعّله على خدمة عامة قبل تنفيذ خطوات دليل النشر وإضافة بيانات أغذية ومناطق خدمة معتمدة.
 
-1. Never display a scientific number without its classification and source.
-2. Never silently substitute missing or low-confidence measurements.
-3. Never change a customer's target automatically from a calibration signal; present a proposal for approval.
-4. Keep theoretical raw ingredient quantity separate from operational waste.
-5. Preserve calculation inputs, formula versions, source versions, and outputs for audit.
-6. Do not infer PAL from training days alone.
-7. No meal preparation before an accepted order.
+## رحلة العميل الموجودة في المعاينة
 
-## Local preview
+1. شاشة ترحيب عربية RTL بهوية NutriFit DZ.
+2. بوابة السلامة الصحية قبل إنشاء الخطة.
+3. إدخال العمر والقياسات والنشاط والهدف والحساسيات.
+4. عرض معادلات الاحتياج وتفصيل السعرات والماكروز.
+5. بناء الوجبات واختيار المكونات والكميات بالغرام.
+6. توزيع الأصناف على الوجبات ومراجعة التكلفة.
+7. حفظ طلب تجريبي محلي ومتابعة الوزن.
 
-Open `preview/index.html` directly in a browser. It is a static UI concept and does not perform production nutrition calculations or accept real orders.
+## مبادئ الحساب الغذائي
 
-## Development
+- تقدير طاقة الراحة افتراضياً بمعادلة Mifflin–St Jeor.
+- استخدام Katch–McArdle فقط عند إدخال كتلة خالية من الدهون مقاسة مع موثوقية كافية.
+- معامل النشاط يُختار داخل نطاقات PAL؛ القيمة المحددة اختيار تشغيلي وليست حقيقة مقاسة.
+- البروتين اختيار افتراضي ضمن نطاقات المراجع، بحسب الهدف.
+- الدهون محسوبة كنسبة تشغيلية داخل النطاق المرجعي.
+- الكربوهيدرات هي **باقي الطاقة** بعد البروتين والدهون؛ لا يوجد حد أدنى صامت يرفع الطاقة فوق الهدف.
+- التحذيرات لا تغيّر المدخلات أو النتائج بصمت.
 
-The production app scaffold will be added in the next implementation stages. Do not treat the static preview as a live ordering system.
+## الشفافية والحدود الحالية
+
+- بيانات الطعام الأولية موسومة داخل النموذج بأنها غير موثقة (\`TODO_VERIFY\`)؛ يلزم ربط كل مكوّن بمصدر، وحالة الوزن (نيء/مطبوخ/كما يباع)، والجزء المأكول، وعامل المردود قبل اعتماد أي ملصق غذائي.
+- الأسعار ومناطق التوصيل والسعة التشغيلية أمثلة داخلية وليست عروضاً أو تغطية مؤكدة.
+- الطلبات تُحفظ في \`localStorage\` على الجهاز نفسه؛ لا تصل إلى مطبخ أو سائق.
+- بيانات الملف الصحي والقياسات تُحفظ محلياً في المتصفح؛ لا توجد حالياً مزامنة أو حساب محمي.
+- مساحة المالك مخفية في بناء الإنتاج؛ إخفاء الواجهة ليس بديلاً عن مصادقة وصلاحيات خادمية. لا تُفعّل إدارة فعلية قبل بناء API وقاعدة بيانات وسياسات وصول.
+- ميثاق الجودة يصف معايير مستهدفة ولا يثبت أن إجراءات سلامة الغذاء أو التبريد مطبقة في الواقع.
+
+## المسار المقترح قبل الإطلاق
+
+1. اعتماد قاعدة بيانات غذائية موثقة مع فصل النيء والمطبوخ ومردود الطهي.
+2. بناء API وقاعدة PostgreSQL ومصادقة وأدوار خادمية (عميل/إدارة/مطبخ/توصيل).
+3. جعل إنشاء الطلب معاملة خادمية تتحقق من السعر والمخزون والحساسية والموعد والطاقة الاستيعابية.
+4. بناء شاشة إنتاج للمطبخ: قائمة تحضير، دفعات، وزن وتعبئة، تتبع، وتسليم.
+5. إضافة الدفع والتوصيل والإشعارات بعد اعتماد مزودي الخدمة وشروطهم.
+6. اختبار أمان وخصوصية، واختبارات تكامل، ومراجعة مختص تغذية وسلامة غذاء قبل التشغيل.
+
+## وثائق المشروع
+
+- [نموذج التشغيل المستهدف](docs/OPERATING_MODEL.md)
+- [المراجع العلمية وسياسة توثيق الأغذية](docs/SCIENTIFIC_REFERENCES.md)
+- [نشر الخادم وإعداد التشغيل](docs/BACKEND_DEPLOYMENT.md)
+
+## تقنيات الواجهة
+
+- React 19 + TypeScript
+- Vite 8
+- Tailwind CSS 4
+- Lucide React
+
+## التطوير
+
+تُجرى التعديلات الحالية على فرع \`redesign/premium-customer-experience\` للحفاظ على \`main\` دون تغيير.  
+[فتح فرع التطوير](https://github.com/l7adj/Fitnes.gemini/tree/redesign/premium-customer-experience) · [طلب المراجعة](https://github.com/l7adj/Fitnes.gemini/pull/1)
