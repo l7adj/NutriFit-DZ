@@ -16,3 +16,5 @@ Do not merge until TypeScript, unit tests, mobile/desktop interaction review, an
 
 
 Last implementation adjustment: the reduced-motion rules use standard duration overrides without `!important` declarations.
+
+Quantity editor is implemented as a draggable, keyboard-dismissable bottom sheet.
