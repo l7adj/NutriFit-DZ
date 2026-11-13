@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { createInitialState, STATE_VERSION } from './data/seed';
 import { AppState, AppTab } from './types';
 import { GlobalStatusBar } from './components/GlobalStatusBar';
@@ -449,13 +450,13 @@ export default function App() {
             </div>
           </aside>
 
-          <main className="min-w-0">
+          <main className="min-w-0"><AnimatePresence mode="wait"><motion.div key={state.tab} initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-4}} transition={{duration:.24,ease:[.16,1,.3,1]}}>
             {state.tab === 'home' && <TodayView state={state} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onReopenCalc={() => setState(prev => ({...prev, ob:1}))}/>}
             {state.tab === 'menu' && <MealBuilder state={state} onUpdate={setState} onNavigate={navigate} onToast={showToast} onCartPulse={triggerCartPulse} pickerRequest={pickerRequest}/>}
             {state.tab === 'cart' && <CartView state={state} onUpdate={setState} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onToast={showToast} apiEnabled={API_ENABLED} authToken={session?.token}/>}
             {state.tab === 'jr' && <JournalView state={state} onUpdate={setState} onToast={showToast}/>}
             {state.tab === 'me' && <AccountView state={state} onReopenCalc={() => setState(prev => ({...prev, ob:1}))} onResetAll={resetAll} onToast={showToast}/>}
-          </main>
+          </motion.div></AnimatePresence></main>
         </div>
       </div>
 
