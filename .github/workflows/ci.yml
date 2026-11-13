@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - redesign/premium-customer-experience
+      - redesign/premium-experience
   pull_request:
     branches:
       - main
