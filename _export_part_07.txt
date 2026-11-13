@@ -1,0 +1,1235 @@
+
+==========================================================================================
+FILE: src/main.tsx
+==========================================================================================
+import {createRoot} from 'react-dom/client';
+import App from './App.tsx';
+import './index.css';
+
+createRoot(document.getElementById('root')!).render(<App />);
+
+
+==========================================================================================
+FILE: src/services/api.ts
+==========================================================================================
+export const API_ENABLED = import.meta.env.VITE_API_ENABLED === 'true';
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/,'');
+
+export interface ApiUser {
+  id: string;
+  name: string;
+  email: string;
+  role: 'customer' | 'admin' | 'kitchen' | 'delivery';
+}
+export interface ApiSession {
+  token: string;
+  user: ApiUser;
+}
+export async function apiRequest<T>(
+  path: string,
+  token?: string,
+  init: RequestInit = {}
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type','application/json');
+  if (token) headers.set('Authorization','Bearer ' + token);
+  const response = await fetch(API_BASE + path,{...init,headers});
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(typeof payload?.error === 'string' ? payload.error : 'تعذر الاتصال بالخدمة.');
+  }
+  return payload as T;
+}
+
+
+==========================================================================================
+FILE: src/types.ts
+==========================================================================================
+export type Sex = 'm' | 'f';
+export type ActivityBand = 'S' | 'L' | 'A' | 'V';
+export type GoalType = 'bulk' | 'cut' | 'recomp' | 'perf';
+export type AllergenKey = 'gluten' | 'eggs' | 'fish' | 'milk' | 'nuts';
+export type FoodCategory = 'protein' | 'carb' | 'fat' | 'veg' | 'juice';
+export type AppTab = 'home' | 'menu' | 'cart' | 'jr' | 'me' | 'admin';
+
+export interface SafetyFlags {
+  preg: boolean;
+  kid: boolean;
+  dia: boolean;
+  ed: boolean;
+}
+
+export interface MacroPer100 {
+  kcal: number;
+  p: number;
+  c: number;
+  f: number;
+  fiber: number;
+}
+
+export interface FoodItem {
+  id: string;
+  emoji: string;
+  name: string;
+  nameFr?: string;
+  nameEn?: string;
+  cat: FoodCategory;
+  unitLabel?: string;
+  imageUrl?: string;
+  per100: MacroPer100;
+  price: number; // DZD per 100g or 100ml
+  al: AllergenKey[];
+  available?: boolean;
+  nutritionDataStatus?: 'verified' | 'unverified';
+  nutritionBasis?: 'raw' | 'cooked' | 'as_sold' | 'unspecified';
+  nutritionSource?: string;
+  sourceRecordId?: string;
+  ediblePortionPct?: number;
+  cookingYield?: number;
+}
+
+export interface DishItem {
+  id: string;
+  emoji: string;
+  name: string;
+  imageUrl?: string;
+  ing: [string, number][]; // [foodId, grams]
+  available?: boolean;
+}
+
+export interface DeliveryZone {
+  id: string;
+  title: string;
+  areas: string;
+  hours: string;
+  fee: number;
+  active: boolean;
+}
+
+export interface PricingConfig {
+  handlingPct: number; // default 7%
+  serviceFeePerMeal: number; // default 200 DZD
+  cutoffHour: number; // default 16 (16:00 Africa/Algiers)
+}
+
+export type CartItemKind = 'food' | 'dish' | 'custom';
+
+export interface CartItem {
+  uid: string;
+  kind: CartItemKind;
+  id: string;
+  name?: string;
+  emoji?: string;
+  grams?: number;
+  mult?: number;
+  ing?: [string, number][];
+  slot: number; // 0..(n-1)
+}
+
+export interface OrderItemSnapshot {
+  label: string;
+  grams: number;
+  kcal: number;
+  p: number;
+  slot: number;
+  slotName: string;
+  rawIngredients: [string, number][];
+}
+
+export interface Order {
+  id: string;
+  createdAt: string;
+  date: string;
+  n: number;
+  zoneTitle: string;
+  zoneFee: number;
+  note: string;
+  ingCost: number;
+  handling: number;
+  service: number;
+  total: number;
+  kcal: number;
+  p: number;
+  c: number;
+  f: number;
+  status: 'C' | 'W' | 'X';
+  productionStage?: 'queued' | 'preparing' | 'packed' | 'out_for_delivery' | 'delivered';
+  items: OrderItemSnapshot[];
+}
+
+export interface WeightEntry {
+  d: string;
+  w: number;
+}
+
+export interface CalibrationLog {
+  d: string;
+  deltaPct: number;
+  rateKgPerWeek: number;
+}
+
+export interface ProgressPhoto {
+  id: string;
+  date: string;
+  weight: number;
+  dataUrl: string;
+  note?: string;
+}
+
+export interface AppState {
+  ver: string;
+  ob: number;
+  name: string;
+  sex: Sex;
+  age: number;
+  h: number;
+  w: number;
+  targetWeight: number;
+  lbm: number;
+  rel: number;
+  lbmMethod?: 'none' | 'dexa' | 'inbody' | 'other';
+  band: ActivityBand;
+  pal: number;
+  goal: GoalType;
+  pct: number;
+  al: AllergenKey[];
+  fl: SafetyFlags;
+  sup: boolean;
+  supg: number;
+  foods: FoodItem[];
+  dishes: DishItem[];
+  zones: DeliveryZone[];
+  pricingConfig: PricingConfig;
+  meals: CartItem[];
+  n: number;
+  activeSlot: number;
+  mealNames: string[];
+  zoneId: string;
+  orderNote: string;
+  ord: Order[];
+  jr: WeightEntry[];
+  photos: ProgressPhoto[];
+  cap: number;
+  adh: number;
+  cal: CalibrationLog[];
+  calDismissedDate: string | null;
+  tab: AppTab;
+  adminMode: boolean;
+  menuFilter: 'dishes' | 'ingredients' | 'juices';
+  ingFilter: 'all' | 'protein' | 'carb' | 'fat' | 'veg';
+  menuSearch: string;
+  chartRange: '1m' | '3m' | 'all';
+}
+
+export interface CalcResult {
+  err: string | null;
+  kat: boolean;
+  bmi: number;
+  bmr: number;
+  tdee: number;
+  kcal: number;
+  P: number;
+  F: number;
+  C: number;
+  fiber: number;
+  pg: number;
+  cg: number;
+  sc: number;
+  sp: number;
+  ev: string;
+  fp: number;
+  warn: string[];
+}
+
+export interface MacroTotals {
+  kcal: number;
+  p: number;
+  c: number;
+  f: number;
+  fiber: number;
+  price: number;
+}
+
+export interface MacroGaps {
+  kcal: number;
+  P: number;
+  C: number;
+  F: number;
+}
+
+
+==========================================================================================
+FILE: src/utils/image.ts
+==========================================================================================
+export async function compressProgressImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('تعذر قراءة الصورة'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('تنسيق الصورة غير صالح'));
+      img.onload = () => {
+        const maxDim = 900;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width >= height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('تعذر تهيئة معالج الصور'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.72));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+
+==========================================================================================
+FILE: src/utils/media.ts
+==========================================================================================
+import proteinImg from '../assets/images/dish_atelier_protein_1794529578370.jpg';
+import carbsImg from '../assets/images/dish_atelier_carbs_1794529578367.jpg';
+import fatsImg from '../assets/images/dish_atelier_fats_1794529579357.jpg';
+import greensImg from '../assets/images/dish_atelier_greens_1794529579750.jpg';
+import juicesImg from '../assets/images/dish_atelier_juices_1794529580140.jpg';
+import { DishItem, FoodCategory, FoodItem } from '../types';
+
+export const CATEGORY_IMAGES: Record<FoodCategory, string> = {
+  protein: proteinImg,
+  carb: carbsImg,
+  fat: fatsImg,
+  veg: greensImg,
+  juice: juicesImg,
+};
+
+export const CATEGORY_LABELS: Record<FoodCategory, string> = {
+  protein: 'بروتين صافي',
+  carb: 'مصدر طاقة وكارب',
+  fat: 'دهون صحية',
+  veg: 'خضر وألياف',
+  juice: 'عصير طبيعي',
+};
+
+export function getFoodImage(food?: FoodItem | null): string {
+  if (!food) return proteinImg;
+  if (food.imageUrl && food.imageUrl.trim()) return food.imageUrl.trim();
+  return CATEGORY_IMAGES[food.cat] || proteinImg;
+}
+
+export function getDishImage(dish: DishItem | null | undefined, foods: FoodItem[]): string {
+  if (!dish) return proteinImg;
+  if (dish.imageUrl && dish.imageUrl.trim()) return dish.imageUrl.trim();
+  // Use the primary protein or first ingredient category photo
+  for (const [fid] of dish.ing) {
+    const f = foods.find((x) => x.id === fid);
+    if (f?.cat === 'protein') return getFoodImage(f);
+  }
+  const first = foods.find((x) => x.id === dish.ing[0]?.[0]);
+  return first ? getFoodImage(first) : proteinImg;
+}
+
+
+==========================================================================================
+FILE: src/utils/nutrition.ts
+==========================================================================================
+import {
+  ACTIVITY_BANDS,
+  ALLERGENS,
+  DEFAULT_MEAL_NAMES,
+  DEFAULT_PRICING,
+  DEFAULT_ZONES,
+  GOALS,
+} from '../data/seed';
+import {
+  ActivityBand,
+  AllergenKey,
+  AppState,
+  CalcResult,
+  CartItem,
+  DeliveryZone,
+  DishItem,
+  FoodItem,
+  MacroGaps,
+  MacroTotals,
+  PricingConfig,
+  WeightEntry,
+} from '../types';
+
+export function round0(v: number): number {
+  return Math.round(v || 0);
+}
+
+export function round1(v: number): number {
+  return Math.round((v || 0) * 10) / 10;
+}
+
+export function round2(v: number): number {
+  return Math.round((v || 0) * 100) / 100;
+}
+
+export function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
+export function algiersNow(): { d: string; h: number; m: number; s: number } {
+  const parts: Record<string, string> = {};
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Algiers',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+    .formatToParts(new Date())
+    .forEach((p) => {
+      parts[p.type] = p.value;
+    });
+  return {
+    d: `${parts.year}-${parts.month}-${parts.day}`,
+    h: Number(parts.hour),
+    m: Number(parts.minute),
+    s: Number(parts.second),
+  };
+}
+
+export function addDays(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+export function formatArabicDate(dateStr: string): string {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  const days = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+  return `${days[d.getUTCDay()]} ${d.getUTCDate()}/${d.getUTCMonth() + 1}`;
+}
+
+export function getNextDelivery(cutoffHour = DEFAULT_PRICING.cutoffHour): {
+  date: string;
+  closedToday: boolean;
+  minutesLeft: number;
+  secondsLeftInMin: number;
+  cutoffHour: number;
+} {
+  const safeCutoff = clamp(Math.round(cutoffHour || 16), 8, 23);
+  const now = algiersNow();
+  const closed = now.h >= safeCutoff;
+  const minutesLeft = closed ? 0 : (safeCutoff - now.h) * 60 - now.m - 1;
+  const secondsLeftInMin = closed ? 0 : 60 - now.s;
+  return {
+    date: addDays(now.d, closed ? 2 : 1),
+    closedToday: closed,
+    minutesLeft: Math.max(0, minutesLeft),
+    secondsLeftInMin: secondsLeftInMin === 60 ? 0 : secondsLeftInMin,
+    cutoffHour: safeCutoff,
+  };
+}
+
+export function safetyGateError(state: AppState): string {
+  if (state.age < 18) {
+    return 'العمر أقل من 18 سنة. لا نصدر خطة تغذية آلية للقاصرين، ويلزم إشراف ولي الأمر وأخصائي تغذية.';
+  }
+  if (state.fl.preg) {
+    return 'حالة الحمل أو الرضاعة تتطلب متابعة طبية متخصصة قبل أي خطة تغذية.';
+  }
+  if (state.fl.kid) {
+    return 'وجود مرض كلوي يتطلب مراجعة طبيب أو مختص تغذية علاجية ولا يُناسبه الحساب الآلي.';
+  }
+  if (state.fl.dia) {
+    return 'السكري أو استخدام أدوية خافضة للسكر يتطلب إشرافًا طبيًا مباشرًا.';
+  }
+  if (state.fl.ed) {
+    return 'وجود تاريخ مع اضطرابات الأكل يتطلب مرافقة مختص نفسي وتغذوي قبل اتباع خطة أرقام.';
+  }
+  return '';
+}
+
+export function calcNutrition(state: AppState): CalcResult {
+  const gateErr = safetyGateError(state);
+  const bmi = state.h > 0 ? state.w / Math.pow(state.h / 100, 2) : 0;
+
+  if (gateErr) {
+    return {
+      err: gateErr,
+      kat: false,
+      bmi,
+      bmr: 0,
+      tdee: 0,
+      kcal: 0,
+      P: 0,
+      F: 0,
+      C: 0,
+      fiber: 25,
+      pg: 0,
+      cg: 0,
+      sc: 0,
+      sp: 0,
+      ev: '',
+      fp: 0,
+      warn: [],
+    };
+  }
+
+  if (state.age > 100 || state.w < 30 || state.w > 300 || state.h < 120 || state.h > 230) {
+    return {
+      err: 'يرجى إدخال عمر بين 18 و100 سنة، وزن بين 30 و300 كغ، وطول بين 120 و230 سم.',
+      kat: false,
+      bmi,
+      bmr: 0,
+      tdee: 0,
+      kcal: 0,
+      P: 0,
+      F: 0,
+      C: 0,
+      fiber: 25,
+      pg: 0,
+      cg: 0,
+      sc: 0,
+      sp: 0,
+      ev: '',
+      fp: 0,
+      warn: [],
+    };
+  }
+
+  if (state.goal === 'cut' && bmi < 18.5) {
+    return {
+      err: 'مؤشر كتلة الجسم أقل من 18.5 (نحافة)، لذا يُحجب هدف خسارة الدهون حفاظًا على سلامتك.',
+      kat: false,
+      bmi,
+      bmr: 0,
+      tdee: 0,
+      kcal: 0,
+      P: 0,
+      F: 0,
+      C: 0,
+      fiber: 25,
+      pg: 0,
+      cg: 0,
+      sc: 0,
+      sp: 0,
+      ev: '',
+      fp: 0,
+      warn: [],
+    };
+  }
+
+  const palRange = ACTIVITY_BANDS[state.band];
+  if (state.pal < palRange.min || state.pal > palRange.max) {
+    return {
+      err: `معامل النشاط ${state.pal.toFixed(2)} خارج نطاق ${palRange.min.toFixed(2)}–${palRange.max.toFixed(2)} للنشاط المحدد.`,
+      kat: false,
+      bmi,
+      bmr: 0,
+      tdee: 0,
+      kcal: 0,
+      P: 0,
+      F: 0,
+      C: 0,
+      fiber: 25,
+      pg: 0,
+      cg: 0,
+      sc: 0,
+      sp: 0,
+      ev: '',
+      fp: 0,
+      warn: [],
+    };
+  }
+
+  if (state.lbm > state.w || state.rel < 0 || state.rel > 100) {
+    return {
+      err: 'تحقق من قياس الكتلة الخالية من الدهون وموثوقيته؛ يجب ألا تتجاوز LBM وزن الجسم، والموثوقية بين 0 و100%.',
+      kat: false,
+      bmi,
+      bmr: 0,
+      tdee: 0,
+      kcal: 0,
+      P: 0,
+      F: 0,
+      C: 0,
+      fiber: 25,
+      pg: 0,
+      cg: 0,
+      sc: 0,
+      sp: 0,
+      ev: '',
+      fp: 0,
+      warn: [],
+    };
+  }
+
+  if (state.pct < -25 || state.pct > 25) {
+    return {
+      err: 'نطاق الفائض أو العجز المسموح به هو بين −25% و+25% فقط.',
+      kat: false,
+      bmi,
+      bmr: 0,
+      tdee: 0,
+      kcal: 0,
+      P: 0,
+      F: 0,
+      C: 0,
+      fiber: 25,
+      pg: 0,
+      cg: 0,
+      sc: 0,
+      sp: 0,
+      ev: '',
+      fp: 0,
+      warn: [],
+    };
+  }
+
+  const kat =
+    state.lbm > 0 &&
+    state.rel >= 70 &&
+    state.lbmMethod !== undefined &&
+    state.lbmMethod !== 'none';
+  const bmr = kat
+    ? 370 + 21.6 * state.lbm
+    : 10 * state.w + 6.25 * state.h - 5 * state.age + (state.sex === 'm' ? 5 : -161);
+  const tdee = bmr * state.pal;
+  const kcal = tdee * (1 + state.pct / 100);
+
+  if (kcal < bmr) {
+    return {
+      err: `السعرات المستهدفة (${round0(kcal)} kcal) أقل من معدل الأيض في الراحة (${round0(bmr)} kcal). خفّف نسبة العجز.`,
+      kat,
+      bmi,
+      bmr,
+      tdee,
+      kcal,
+      P: 0,
+      F: 0,
+      C: 0,
+      fiber: 25,
+      pg: 0,
+      cg: 0,
+      sc: 0,
+      sp: 0,
+      ev: '',
+      fp: 0,
+      warn: [],
+    };
+  }
+
+  const warn: string[] = [];
+  if (state.lbm > 0 && (!state.lbmMethod || state.lbmMethod === 'none' || state.rel < 70)) {
+    warn.push('لم تُستخدم قيمة LBM لعدم توثيق طريقة القياس أو لأن موثوقية القياس أقل من 70%؛ استُخدمت معادلة Mifflin-St Jeor.');
+  }
+  if (state.pct < -20) {
+    warn.push('عجز أكبر من 20%: يُنصح به لفترات قصيرة ومراقبة دقيقة فقط.');
+  }
+
+  const P =
+    state.goal === 'cut' && kat ? 2.5 * state.lbm : GOALS[state.goal].proteinPerKg * state.w;
+  const pg = P / state.w;
+  if (pg > 3.1) {
+    warn.push('كمية البروتين مرتفعة جدًا؛ تأكد من شرب ماء كافٍ وخلوّ الكلى من أي مشاكل.');
+  }
+
+  const F = (0.25 * kcal) / 9;
+  const rawC = (kcal - 4 * P - 9 * F) / 4;
+  if (rawC < 0) {
+    return {
+      err: 'مجموع البروتين والدهون يتجاوز السعرات المستهدفة. عدّل الهدف أو الوزن.',
+      kat,
+      bmi,
+      bmr,
+      tdee,
+      kcal,
+      P,
+      F,
+      C: 0,
+      fiber: 25,
+      pg,
+      cg: 0,
+      sc: 0,
+      sp: 0,
+      ev: '',
+      fp: P,
+      warn,
+    };
+  }
+
+  // Carbohydrate is the energy remainder. Never clamp it: doing so would
+  // silently increase the prescribed calories beyond the stated energy target.
+  const C = rawC;
+  const cg = C / state.w;
+  if (cg < 3) {
+    warn.push('الكارب منخفض نسبيًا لرياضي؛ راقب جودة الأداء أثناء الحصص.');
+  } else if (cg > 12) {
+    warn.push('الكارب مرتفع جدًا؛ تأكد أن حجم تدريبك الفعلي يبرر هذه الكمية.');
+  }
+
+  const sc = state.sup ? Math.min(state.supg, 0.5 * P) : 0;
+  // Classify the amount actually credited, while retaining whether the
+  // requested supplement amount exceeded the operational 50% ceiling.
+  const requestedSp = state.sup && P > 0 ? (state.supg / P) * 100 : 0;
+  const sp = P > 0 ? (sc / P) * 100 : 0;
+  const ev =
+    requestedSp > 50
+      ? 'تم تحديده بسقف 50%'
+      : sp <= 20
+        ? 'مكمل خفيف'
+        : sp <= 30
+          ? 'توازن مثالي'
+          : sp <= 40
+            ? 'مقبول'
+            : 'مرتفع';
+  const fp = Math.max(0, P - sc);
+
+  return {
+    err: null,
+    kat,
+    bmi,
+    bmr,
+    tdee,
+    kcal,
+    P,
+    F,
+    C,
+    fiber: 25,
+    pg,
+    cg,
+    sc,
+    sp,
+    ev,
+    fp,
+    warn,
+  };
+}
+
+export function foodMacros(food: FoodItem, grams: number): MacroTotals {
+  const q = grams / 100;
+  return {
+    kcal: food.per100.kcal * q,
+    p: food.per100.p * q,
+    c: food.per100.c * q,
+    f: food.per100.f * q,
+    fiber: food.per100.fiber * q,
+    price: food.price * q,
+  };
+}
+
+export function dishMacros(
+  dish: DishItem,
+  foods: FoodItem[],
+  mult = 1
+): MacroTotals & { grams: number } {
+  const foodMap = new Map(foods.map((f) => [f.id, f]));
+  const res = { kcal: 0, p: 0, c: 0, f: 0, fiber: 0, price: 0, grams: 0 };
+  for (const [fid, g] of dish.ing) {
+    const f = foodMap.get(fid);
+    if (!f) continue;
+    const totalG = g * mult;
+    const m = foodMacros(f, totalG);
+    res.kcal += m.kcal;
+    res.p += m.p;
+    res.c += m.c;
+    res.f += m.f;
+    res.fiber += m.fiber;
+    res.price += m.price;
+    res.grams += totalG;
+  }
+  return res;
+}
+
+export function cartItemMacros(
+  item: CartItem,
+  foods: FoodItem[],
+  dishes: DishItem[]
+): MacroTotals & { grams: number; rawIngredients: [string, number][] } {
+  if (item.kind === 'food') {
+    const f = foods.find((x) => x.id === item.id);
+    const g = item.grams || 0;
+    if (!f) return { kcal: 0, p: 0, c: 0, f: 0, fiber: 0, price: 0, grams: 0, rawIngredients: [] };
+    return { ...foodMacros(f, g), grams: g, rawIngredients: [[f.id, g]] };
+  }
+  if (item.kind === 'dish') {
+    const d = dishes.find((x) => x.id === item.id);
+    const mult = item.mult || 1;
+    if (!d) return { kcal: 0, p: 0, c: 0, f: 0, fiber: 0, price: 0, grams: 0, rawIngredients: [] };
+    return {
+      ...dishMacros(d, foods, mult),
+      rawIngredients: d.ing.map(([fid, g]) => [fid, Math.round(g * mult)]),
+    };
+  }
+  const ing = item.ing || [];
+  const fakeDish: DishItem = {
+    id: item.id,
+    emoji: item.emoji || '🍱',
+    name: item.name || 'وجبة مخصصة',
+    ing,
+  };
+  return {
+    ...dishMacros(fakeDish, foods, 1),
+    rawIngredients: ing.map(([fid, g]) => [fid, Math.round(g)]),
+  };
+}
+
+export function calcCartTotals(state: AppState): MacroTotals {
+  return state.meals.reduce<MacroTotals>(
+    (acc, m) => {
+      const mac = cartItemMacros(m, state.foods, state.dishes);
+      acc.kcal += mac.kcal;
+      acc.p += mac.p;
+      acc.c += mac.c;
+      acc.f += mac.f;
+      acc.fiber += mac.fiber;
+      acc.price += mac.price;
+      return acc;
+    },
+    { kcal: 0, p: 0, c: 0, f: 0, fiber: 0, price: 0 }
+  );
+}
+
+export function calcGaps(state: AppState): MacroGaps {
+  const r = calcNutrition(state);
+  if (r.err) return { kcal: 0, P: 0, C: 0, F: 0 };
+  const t = calcCartTotals(state);
+  return {
+    kcal: Math.max(0, r.kcal - t.kcal),
+    P: Math.max(0, r.fp - t.p),
+    C: Math.max(0, r.C - t.c),
+    F: Math.max(0, r.F - t.f),
+  };
+}
+
+export function calcCartPrice(
+  ingRaw: number,
+  mealCount: number,
+  zoneFee: number,
+  config: PricingConfig = DEFAULT_PRICING
+) {
+  const ing = Math.round(ingRaw);
+  const handling = Math.round(ing * ((config.handlingPct ?? 7) / 100));
+  const service = Math.round((config.serviceFeePerMeal ?? 200) * mealCount);
+  const delivery = Math.round(zoneFee || 0);
+  const total = ing + handling + service + delivery;
+  return { ing, handling, service, delivery, total };
+}
+
+export function getSelectedZone(state: AppState): DeliveryZone {
+  const zones = state.zones && state.zones.length > 0 ? state.zones : DEFAULT_ZONES;
+  const activeZones = zones.filter((z) => z.active);
+  const pool = activeZones.length > 0 ? activeZones : zones;
+  return pool.find((z) => z.id === state.zoneId) || pool[0];
+}
+
+export function getFoodGramDefaults(food: FoodItem): {
+  def: number;
+  min: number;
+  max: number;
+  step: number;
+  presets: number[];
+} {
+  if (food.cat === 'juice') {
+    return { def: 250, min: 100, max: 600, step: 10, presets: [200, 250, 330, 500] };
+  }
+  if (food.per100.f >= 85 || food.id === 'oil') {
+    return { def: 10, min: 5, max: 50, step: 5, presets: [5, 10, 15, 20] };
+  }
+  if (food.id === 'avc') {
+    return { def: 75, min: 25, max: 250, step: 5, presets: [50, 75, 100, 150] };
+  }
+  if (food.cat === 'fat') {
+    return { def: 20, min: 5, max: 100, step: 5, presets: [15, 20, 30, 50] };
+  }
+  if (food.cat === 'veg') {
+    return { def: 100, min: 30, max: 400, step: 10, presets: [75, 100, 150, 200] };
+  }
+  if (food.id === 'brd') {
+    return { def: 80, min: 30, max: 300, step: 10, presets: [50, 80, 120, 160] };
+  }
+  return { def: 150, min: 30, max: 450, step: 10, presets: [100, 150, 200, 250] };
+}
+
+export function getDominantMacro(food: FoodItem): {
+  key: 'P' | 'C' | 'F';
+  label: string;
+  shortLabel: string;
+  color: string;
+  per100Val: number;
+} {
+  const pKcal = food.per100.p * 4;
+  const cKcal = food.per100.c * 4;
+  const fKcal = food.per100.f * 9;
+  if (pKcal >= cKcal && pKcal >= fKcal) {
+    return {
+      key: 'P',
+      label: 'بروتين',
+      shortLabel: 'مصدر بروتين',
+      color: '#d4a24c',
+      per100Val: food.per100.p,
+    };
+  }
+  if (cKcal >= pKcal && cKcal >= fKcal) {
+    return {
+      key: 'C',
+      label: 'كارب',
+      shortLabel: 'مصدر طاقة وكارب',
+      color: '#5aa882',
+      per100Val: food.per100.c,
+    };
+  }
+  return {
+    key: 'F',
+    label: 'دهون',
+    shortLabel: 'مصدر دهون صحية',
+    color: '#c97a57',
+    per100Val: food.per100.f,
+  };
+}
+
+export function getBlockedAllergensForFood(food: FoodItem, userAllergens: AllergenKey[]): AllergenKey[] {
+  return food.al.filter((a) => userAllergens.includes(a));
+}
+
+export function getBlockedAllergensForDish(
+  dish: DishItem,
+  foods: FoodItem[],
+  userAllergens: AllergenKey[]
+): AllergenKey[] {
+  const set = new Set<AllergenKey>();
+  for (const [fid] of dish.ing) {
+    const f = foods.find((x) => x.id === fid);
+    if (!f) continue;
+    for (const a of getBlockedAllergensForFood(f, userAllergens)) {
+      set.add(a);
+    }
+  }
+  return Array.from(set);
+}
+
+export function formatAllergenList(keys: AllergenKey[]): string {
+  return keys.map((k) => ALLERGENS[k]).join('، ');
+}
+
+export function autoDistributeMeals(
+  meals: CartItem[],
+  mealCount: number,
+  foods: FoodItem[],
+  dishes: DishItem[]
+): CartItem[] {
+  if (mealCount <= 1) {
+    return meals.map((m) => ({ ...m, slot: 0 }));
+  }
+  const indexed = meals.map((m, idx) => ({
+    idx,
+    kcal: cartItemMacros(m, foods, dishes).kcal,
+  }));
+  indexed.sort((a, b) => b.kcal - a.kcal);
+  const slotKcal = Array.from({ length: mealCount }, () => 0);
+  const assignedSlot = new Array<number>(meals.length).fill(0);
+
+  for (const item of indexed) {
+    let bestSlot = 0;
+    for (let s = 1; s < mealCount; s++) {
+      if (slotKcal[s] < slotKcal[bestSlot]) bestSlot = s;
+    }
+    assignedSlot[item.idx] = bestSlot;
+    slotKcal[bestSlot] += item.kcal;
+  }
+
+  return meals.map((m, i) => ({ ...m, slot: assignedSlot[i] }));
+}
+
+export function calcLinearRegression28d(entries: WeightEntry[]): {
+  count: number;
+  slopeKgPerWeek: number;
+  startWeight: number;
+  endWeight: number;
+} | null {
+  const today = algiersNow().d;
+  const cutoff = addDays(today, -28);
+  const recent = entries
+    .filter((e) => e.d >= cutoff)
+    .sort((a, b) => (a.d < b.d ? -1 : 1));
+
+  if (recent.length < 4) return null;
+
+  const t0 = new Date(`${recent[0].d}T12:00:00Z`).getTime();
+  const points = recent.map((e) => ({
+    x: (new Date(`${e.d}T12:00:00Z`).getTime() - t0) / 86400000,
+    y: e.w,
+  }));
+
+  const n = points.length;
+  const meanX = points.reduce((s, p) => s + p.x, 0) / n;
+  const meanY = points.reduce((s, p) => s + p.y, 0) / n;
+
+  let num = 0;
+  let den = 0;
+  for (const p of points) {
+    num += (p.x - meanX) * (p.y - meanY);
+    den += (p.x - meanX) * (p.x - meanX);
+  }
+  if (den === 0) return null;
+
+  const slopePerDay = num / den;
+  return {
+    count: n,
+    slopeKgPerWeek: round2(slopePerDay * 7),
+    startWeight: recent[0].w,
+    endWeight: recent[recent.length - 1].w,
+  };
+}
+
+export function suggestWeeklyCalibration(state: AppState): {
+  canSuggest: boolean;
+  deltaPct: number;
+  rateKgPerWeek: number | null;
+  targetRate: number;
+  reason: string;
+} {
+  const reg = calcLinearRegression28d(state.jr);
+  const targetRate = GOALS[state.goal].targetRateKgWk;
+
+  if (!reg) {
+    return {
+      canSuggest: false,
+      deltaPct: 0,
+      rateKgPerWeek: null,
+      targetRate,
+      reason: 'نحتاج 4 قياسات وزن على الأقل خلال آخر 28 يومًا لحساب الانحدار الخطي الأسبوعي بدقة.',
+    };
+  }
+
+  if (state.adh < 80) {
+    return {
+      canSuggest: false,
+      deltaPct: 0,
+      rateKgPerWeek: reg.slopeKgPerWeek,
+      targetRate,
+      reason: `الالتزام الأسبوعي (${state.adh}%) أقل من 80%. لا نقترح تعديل السعرات لأن ثبات الوزن حينها يدل على الالتزام لا على خطأ الحساب.`,
+    };
+  }
+
+  const diff = reg.slopeKgPerWeek - targetRate;
+  if (Math.abs(diff) <= 0.15) {
+    return {
+      canSuggest: false,
+      deltaPct: 0,
+      rateKgPerWeek: reg.slopeKgPerWeek,
+      targetRate,
+      reason: `معدل تغير وزنك (${reg.slopeKgPerWeek > 0 ? '+' : ''}${reg.slopeKgPerWeek} كغ/أسبوع) متطابق تقريبًا مع المستهدف (${targetRate > 0 ? '+' : ''}${targetRate} كغ/أسبوع). لا حاجة لتعديل.`,
+    };
+  }
+
+  const deltaPct = diff > 0 ? -5 : 5;
+  if (state.pct + deltaPct < -25 || state.pct + deltaPct > 25) {
+    return {
+      canSuggest: false,
+      deltaPct: 0,
+      rateKgPerWeek: reg.slopeKgPerWeek,
+      targetRate,
+      reason: 'الاقتراح يتجاوز حدود الأمان (±25%). يُفضّل مراجعة مختص قبل أي خفض أو رفع إضافي.',
+    };
+  }
+
+  return {
+    canSuggest: true,
+    deltaPct,
+    rateKgPerWeek: reg.slopeKgPerWeek,
+    targetRate,
+    reason: `معدل التغير خلال 28 يومًا هو ${reg.slopeKgPerWeek > 0 ? '+' : ''}${reg.slopeKgPerWeek} كغ/أسبوع مقارنة بالمستهدف (${targetRate > 0 ? '+' : ''}${targetRate} كغ/أسبوع). نقترح ${deltaPct > 0 ? 'زيادة' : 'خفض'} 5% من السعرات.`,
+  };
+}
+
+export function bandRangeText(band: ActivityBand): string {
+  const b = ACTIVITY_BANDS[band];
+  return `${b.min.toFixed(2)}–${b.max.toFixed(2)}`;
+}
+
+export function getMealSlotName(state: AppState, index: number): string {
+  const custom = state.mealNames?.[index];
+  if (custom && custom.trim()) return custom;
+  return DEFAULT_MEAL_NAMES[index] || `الوجبة ${index + 1}`;
+}
+
+
+==========================================================================================
+FILE: tests/nutrition.test.ts
+==========================================================================================
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createInitialState, DEFAULT_PRICING } from '../src/data/seed.ts';
+import {
+  calcCartPrice,
+  calcNutrition,
+  getBlockedAllergensForDish,
+  getBlockedAllergensForFood,
+} from '../src/utils/nutrition.ts';
+
+test('macro energy remains equal to the daily energy target', () => {
+  const state = createInitialState();
+  const result = calcNutrition(state);
+
+  assert.equal(result.err, null);
+  const macroEnergy = result.P * 4 + result.C * 4 + result.F * 9;
+  assert.ok(Math.abs(macroEnergy - result.kcal) < 0.001);
+});
+
+test('carbohydrate is not silently clamped to an arbitrary minimum', () => {
+  const state = createInitialState();
+  state.w = 300;
+  state.h = 120;
+  state.age = 100;
+  state.pal = 1.4;
+  state.band = 'L';
+  state.goal = 'cut';
+  state.pct = -25;
+
+  const result = calcNutrition(state);
+
+  assert.equal(result.err, null);
+  assert.ok(result.C > 0);
+  assert.ok(result.C < 60);
+  const macroEnergy = result.P * 4 + result.C * 4 + result.F * 9;
+  assert.ok(Math.abs(macroEnergy - result.kcal) < 0.001);
+});
+
+test('health safety gate blocks automatic plans for minors', () => {
+  const state = createInitialState();
+  state.age = 17;
+
+  const result = calcNutrition(state);
+
+  assert.match(result.err ?? '', /أقل من 18/);
+});
+
+test('health safety gate blocks cut goal when BMI is below 18.5', () => {
+  const state = createInitialState();
+  state.w = 50;
+  state.h = 175;
+  state.goal = 'cut';
+  state.pct = -15;
+
+  const result = calcNutrition(state);
+
+  assert.match(result.err ?? '', /18\.5/);
+});
+
+test('energy target below BMR is rejected cleanly', () => {
+  const state = createInitialState();
+  state.band = 'S';
+  state.pal = 1.2;
+  state.goal = 'cut';
+  state.pct = -25;
+
+  const result = calcNutrition(state);
+
+  assert.match(result.err ?? '', /أقل من معدل الأيض في الراحة/);
+});
+
+test('Katch-McArdle is used only when measured lean mass is supplied with sufficient reliability', () => {
+  const state = createInitialState();
+  state.lbm = 60;
+  state.rel = 70;
+  state.lbmMethod = 'inbody';
+
+  const result = calcNutrition(state);
+
+  assert.equal(result.kat, true);
+  assert.equal(result.bmr, 370 + 21.6 * 60);
+});
+
+test('PAL cannot escape its selected activity band', () => {
+  const state = createInitialState();
+  state.band = 'A';
+  state.pal = 2.1;
+
+  const result = calcNutrition(state);
+
+  assert.match(result.err ?? '', /خارج نطاق/);
+});
+
+test('unreliable lean-mass measurements fall back to Mifflin with an explicit warning', () => {
+  const state = createInitialState();
+  state.lbm = 60;
+  state.rel = 69;
+  state.lbmMethod = 'inbody';
+
+  const result = calcNutrition(state);
+
+  assert.equal(result.err, null);
+  assert.equal(result.kat, false);
+  assert.ok(result.warn.some((warning) => warning.includes('موثوقية القياس أقل من 70%')));
+});
+
+test('supplement protein exceeding 50% is capped at 50% and splits into sc + fp', () => {
+  const state = createInitialState();
+  state.sup = true;
+  state.supg = 120;
+
+  const result = calcNutrition(state);
+
+  assert.equal(result.err, null);
+  assert.equal(result.sp, 50);
+  assert.equal(result.ev, 'تم تحديده بسقف 50%');
+  assert.ok(Math.abs(result.sc + result.fp - result.P) < 0.001);
+});
+
+test('transparent pricing calculates market food cost + 7% handling + per-meal fee + delivery fee', () => {
+  const invoice = calcCartPrice(1000, 3, 150, DEFAULT_PRICING);
+
+  assert.equal(invoice.ing, 1000);
+  assert.equal(invoice.handling, 70);
+  assert.equal(invoice.service, 600);
+  assert.equal(invoice.delivery, 150);
+  assert.equal(invoice.total, 1820);
+});
+
+test('allergen blocking detects customer allergens on individual foods and dishes', () => {
+  const state = createInitialState();
+  const eggFood = state.foods.find((f) => f.al.includes('eggs'));
+  assert.ok(eggFood);
+  assert.deepEqual(getBlockedAllergensForFood(eggFood, ['eggs']), ['eggs']);
+
+  const dishWithEgg = state.dishes.find((d) =>
+    d.ing.some(([fid]) => state.foods.find((f) => f.id === fid)?.al.includes('eggs'))
+  );
+  if (dishWithEgg) {
+    assert.ok(getBlockedAllergensForDish(dishWithEgg, state.foods, ['eggs']).includes('eggs'));
+  }
+});
+
+test('seed foods remain honestly marked unverified until laboratory or reference table approval', () => {
+  const state = createInitialState();
+  assert.ok(state.foods.length > 0);
+  assert.equal(state.foods.every((f) => f.nutritionDataStatus === 'unverified'), true);
+  assert.equal(state.foods.every((f) => f.nutritionBasis === 'unspecified'), true);
+});
+
+test('new customer journal starts empty and never displays invented weight history', () => {
+  const state = createInitialState();
+  assert.deepEqual(state.jr, []);
+  assert.deepEqual(state.photos, []);
+});
+
+test('seed delivery zones are all inactive until real coverage is approved', () => {
+  const state = createInitialState();
+  assert.ok(state.zones.length > 0);
+  assert.equal(state.zones.some((zone) => zone.active), false);
+});
+
+
