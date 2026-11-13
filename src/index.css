@@ -1,93 +1,67 @@
 @import "tailwindcss";
 
+/* NutriFit Atelier — quiet luxury, clinical clarity */
 :root {
-  --nf-bg: #09090b;
-  --nf-surface: #111114;
-  --nf-surface-2: #18181c;
-  --nf-border: #232329;
-  --nf-gold: #c8a96e;
-  --nf-gold-light: #e6d1a3;
-  --nf-text: #f3f1ec;
-  --nf-muted: #96938a;
-  --nf-dim: #66645e;
-  --nf-ok: #6b9c7e;
-  --nf-warn: #c89a56;
-  --nf-bad: #b86157;
+  color-scheme: light;
+  --nf-bg: #f5f3ed;
+  --nf-surface: #fffefb;
+  --nf-surface-2: #eeece4;
+  --nf-border: #e3dfd4;
+  --nf-ink: #202722;
+  --nf-text: #28332d;
+  --nf-muted: #737b72;
+  --nf-dim: #92988f;
+  --nf-green: #24483d;
+  --nf-green-soft: #e8eee8;
+  --nf-sage: #87978a;
+  --nf-brass: #a77d49;
+  --nf-warn: #a77d49;
+  --nf-bad: #a64f45;
+  --nf-ok: #47765d;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
-
 @layer base {
-  html {
-    font-family: Tahoma, 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
-    background-color: var(--nf-bg);
-    color: var(--nf-text);
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  body {
-    background-color: #09090b;
-    min-height: 100vh;
-  }
-
-  input[type='number'] {
-    font-variant-numeric: tabular-nums;
-  }
+  html { font-family: "IBM Plex Sans Arabic", "Noto Sans Arabic", Tahoma, "Segoe UI", sans-serif; background:var(--nf-bg); color:var(--nf-text); -webkit-tap-highlight-color:transparent; scroll-behavior:smooth; }
+  body { background:var(--nf-bg); min-height:100vh; margin:0; }
+  button, input, select, textarea { font:inherit; }
+  button { -webkit-tap-highlight-color:transparent; }
+  input, textarea, select { color:var(--nf-ink); }
+  input[type=number] { font-variant-numeric:tabular-nums; }
+  ::selection { background:#dce6dc; color:var(--nf-ink); }
 }
+.font-num,.tabular-nums { font-variant-numeric:tabular-nums; }
+.no-scrollbar::-webkit-scrollbar { display:none; }
+.no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
+.touch-press { transition:transform 150ms cubic-bezier(.2,.8,.2,1),border-color 180ms ease,background-color 180ms ease,box-shadow 180ms ease; }
+.touch-press:active { transform:scale(.982); }
+:focus-visible { outline:2px solid var(--nf-sage); outline-offset:3px; }
+@keyframes cartLand { 0%{transform:scale(1)} 40%{transform:scale(1.08);box-shadow:0 0 0 5px rgba(36,72,61,.13)} 100%{transform:scale(1);box-shadow:0 0 0 0 transparent} }
+.animate-cart-land { animation:cartLand 420ms cubic-bezier(.16,1,.3,1); }
 
-.font-num {
-  font-variant-numeric: tabular-nums;
+/* Bridge the existing component vocabulary into the new design system. */
+[class*="bg-[#09090b]"],[class*="bg-[#09090B]"] { background-color:var(--nf-bg)!important; }
+[class*="bg-[#111114]"] { background-color:var(--nf-surface)!important; }
+[class*="bg-[#18181c]"] { background-color:var(--nf-surface-2)!important; }
+[class*="border-[#232329]"] { border-color:var(--nf-border)!important; }
+[class*="text-[#f3f1ec]"] { color:var(--nf-ink)!important; }
+[class*="text-[#e6d1a3]"],[class*="text-[#c8a96e]"] { color:var(--nf-green)!important; }
+[class*="text-[#96938a]"],[class*="text-[#66645e]"] { color:var(--nf-muted)!important; }
+[class*="bg-[#1c1a15]"] { background-color:var(--nf-green-soft)!important; }
+[class*="border-[#c8a96e]"] { border-color:#b6c4b7!important; }
+[class*="shadow-[0_8px_30px_rgba(200,169,110"] { box-shadow:0 12px 32px rgba(32,39,34,.12)!important; }
+[class*="bg-[#1b1212]"],[class*="bg-[#1a1111]"] { background-color:#f8eeeb!important; }
+[class*="text-[#b86157]"] { color:var(--nf-bad)!important; }
+[class*="text-[#6b9c7e]"] { color:var(--nf-ok)!important; }
+[class*="text-[#c89a56]"] { color:var(--nf-warn)!important; }
+.rounded-2xl { border-radius:1.1rem; }
+.rounded-3xl { border-radius:1.45rem; }
+button:not(:disabled) { cursor:pointer; }
+@media (hover:hover) {
+  button:not(:disabled):hover { filter:brightness(.985); }
 }
-
-.tabular-nums {
-  font-variant-numeric: tabular-nums;
-}
-
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.touch-press {
-  transition:
-    transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
-    background-color 180ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.touch-press:active {
-  transform: scale(0.982);
-}
-
-@keyframes cartLand {
-  0% {
-    transform: scale(1);
-  }
-  40% {
-    transform: scale(1.12);
-    box-shadow: 0 0 0 4px rgba(200, 169, 110, 0.28);
-  }
-  100% {
-    transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(200, 169, 110, 0);
-  }
-}
-
-.animate-cart-land {
-  animation: cartLand 420ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-:focus-visible {
-  outline: 2px solid #c8a96e;
-  outline-offset: 2px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+@media (prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important; }
 }
