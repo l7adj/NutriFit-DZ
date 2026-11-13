@@ -882,7 +882,7 @@ export const MenuView: React.FC<MenuViewProps> = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
-            className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex justify-end"
+            className="fixed inset-0 z-50 bg-[#202722]/45 backdrop-blur-sm flex items-end sm:items-center sm:justify-end"
             onClick={(e) => {
               if (e.target === e.currentTarget) setSelectedFoodId(null);
             }}
@@ -893,7 +893,7 @@ export const MenuView: React.FC<MenuViewProps> = ({
               exit={{ x: -32, opacity: 0 }}
               transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
               aria-label="تخصيص الكمية والخلط"
-              className="w-full max-w-lg h-full bg-[#09090b] border-r border-[#232329] flex flex-col shadow-2xl"
+              className="w-full max-w-lg h-[94dvh] sm:h-full sm:max-h-full rounded-t-[28px] sm:rounded-none bg-[#fffefb] border border-[#e3dfd4] sm:border-y-0 sm:border-l-0 flex flex-col shadow-2xl overflow-hidden"
             >
               {(() => {
                 const isJuice = selectedFood.cat === 'juice';
@@ -938,7 +938,7 @@ export const MenuView: React.FC<MenuViewProps> = ({
                 return (
                   <>
                     {/* Drawer Header */}
-                    <div className="p-4 sm:p-5 border-b border-[#232329] bg-[#111114] flex items-center justify-between gap-3 shrink-0">
+                    <div className="p-4 sm:p-5 border-b border-[#e3dfd4] bg-[#fffefb] flex items-center justify-between gap-3 shrink-0">
                       <div className="min-w-0">
                         <div className="text-[11px] font-medium text-[#c8a96e]">
                           0{safeSlot + 1}. {getMealSlotName(state, safeSlot)}
@@ -992,6 +992,43 @@ export const MenuView: React.FC<MenuViewProps> = ({
                           تنبيه علمي: القيم الغذائية لهذا الصنف في مرحلة المعاينة الأولية ولم تُعتمد بعد بسجل مخبري رسمي.
                         </div>
                       )}
+
+                      {/* Live nutrition and price — pinned above quantity controls */}
+                      <div className="sticky top-0 z-20 -mx-1 rounded-2xl border border-[#d9e1d8] bg-[#fffefb]/95 p-4 shadow-[0_8px_24px_rgba(32,39,34,0.08)] backdrop-blur-md space-y-2.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-bold text-[#f3f1ec]">الأثر الغذائي والتكلفة</span>
+                          <span className="text-sm font-bold text-[#e6d1a3] tabular-nums">
+                            {round1(mac.price)} دج ({round2(perUnitPrice)}/{unit})
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-4 gap-2 text-center bg-[#18181c] rounded-xl py-2.5 px-1 tabular-nums text-xs">
+                          <div>
+                            <div className="font-bold text-[#e6d1a3]">+{round0(mac.kcal)}</div>
+                            <div className="text-[10px] text-[#96938a]">سعرة</div>
+                          </div>
+                          <div>
+                            <div className="font-bold text-[#c8a96e]">+{round1(mac.p)}غ</div>
+                            <div className="text-[10px] text-[#96938a]">بروتين</div>
+                          </div>
+                          <div>
+                            <div className="font-bold text-[#6b9c7e]">+{round1(mac.c)}غ</div>
+                            <div className="text-[10px] text-[#96938a]">كارب</div>
+                          </div>
+                          <div>
+                            <div className="font-bold text-[#a98c72]">+{round1(mac.f)}غ</div>
+                            <div className="text-[10px] text-[#96938a]">دهون</div>
+                          </div>
+                        </div>
+
+                        <div className="text-[11px] text-[#96938a] tabular-nums flex items-center justify-between pt-1">
+                          <span>المتبقي لليوم بعد الإضافة:</span>
+                          <b className="text-[#f3f1ec]">
+                            {round0(remKcalAfter)} kcal · P{round0(remPAfter)} C{round0(remCAfter)} F{round0(remFAfter)}
+                          </b>
+                        </div>
+                      </div>
+
 
                       {/* 1. Precision Quantity Selector */}
                       <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 space-y-3.5">
@@ -1140,45 +1177,10 @@ export const MenuView: React.FC<MenuViewProps> = ({
                         )}
                       </div>
 
-                      {/* 3. Live Impact Preview */}
-                      <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 space-y-2.5">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-bold text-[#f3f1ec]">الأثر الغذائي والتكلفة</span>
-                          <span className="text-sm font-bold text-[#e6d1a3] tabular-nums">
-                            {round1(mac.price)} دج ({round2(perUnitPrice)}/{unit})
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-4 gap-2 text-center bg-[#18181c] rounded-xl py-2.5 px-1 tabular-nums text-xs">
-                          <div>
-                            <div className="font-bold text-[#e6d1a3]">+{round0(mac.kcal)}</div>
-                            <div className="text-[10px] text-[#96938a]">سعرة</div>
-                          </div>
-                          <div>
-                            <div className="font-bold text-[#c8a96e]">+{round1(mac.p)}غ</div>
-                            <div className="text-[10px] text-[#96938a]">بروتين</div>
-                          </div>
-                          <div>
-                            <div className="font-bold text-[#6b9c7e]">+{round1(mac.c)}غ</div>
-                            <div className="text-[10px] text-[#96938a]">كارب</div>
-                          </div>
-                          <div>
-                            <div className="font-bold text-[#a98c72]">+{round1(mac.f)}غ</div>
-                            <div className="text-[10px] text-[#96938a]">دهون</div>
-                          </div>
-                        </div>
-
-                        <div className="text-[11px] text-[#96938a] tabular-nums flex items-center justify-between pt-1">
-                          <span>المتبقي لليوم بعد الإضافة:</span>
-                          <b className="text-[#f3f1ec]">
-                            {round0(remKcalAfter)} kcal · P{round0(remPAfter)} C{round0(remCAfter)} F{round0(remFAfter)}
-                          </b>
-                        </div>
-                      </div>
                     </div>
 
                     {/* Sticky Bottom Action */}
-                    <div className="p-4 border-t border-[#232329] bg-[#111114] shrink-0">
+                    <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-[#e3dfd4] bg-[#fffefb] shrink-0">
                       <button
                         type="button"
                         disabled={grams <= 0}
