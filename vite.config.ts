@@ -5,6 +5,8 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // This repository is published at https://l7adj.github.io/NutriFit-DZ/
+    base: '/NutriFit-DZ/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
