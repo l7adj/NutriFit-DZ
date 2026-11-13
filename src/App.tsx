@@ -409,143 +409,57 @@ export default function App() {
     );
   }
 
-  // DEDICATED CLIENT WORKSPACE (Luxury Concierge Nutrition Experience)
+  // Customer workspace — editorial dashboard and task-oriented navigation
   return (
-    <div className="min-h-screen pb-24 lg:pb-10">
+    <div className="min-h-screen bg-[var(--nf-bg)] pb-24 lg:pb-10">
       <GlobalStatusBar state={state} />
-
-      <div className="max-w-6xl mx-auto px-3 sm:px-4 pt-3 flex items-center justify-between gap-3">
-        <span className="text-[11px] font-semibold text-[#66645e]">
-          NutriFit DZ · بوابة العميل
-        </span>
-        <div className="flex items-center gap-3">
-          {API_ENABLED && session && (
-            <button
-              type="button"
-              onClick={logout}
-              className="text-[11px] font-semibold text-[#c8a96e] hover:underline underline-offset-4 cursor-pointer"
-            >
-              تسجيل الخروج
-            </button>
-          )}
-          {import.meta.env.DEV && (
-            <button
-              type="button"
-              onClick={enterOwnerWorkspace}
-              className="touch-press px-3 py-1.5 rounded-lg bg-[#111114] border border-[#232329] hover:border-[#c8a96e]/60 text-[11px] font-bold text-[#c8a96e] flex items-center gap-1.5 cursor-pointer"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-              <span>واجهة المالك · معاينة تطوير</span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="max-w-6xl mx-auto px-3 sm:px-4 pt-4 lg:flex lg:gap-6 lg:items-start">
-        {/* Desktop Side Navigation Rail */}
-        <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:sticky lg:top-20 bg-[#111114] border border-[#232329] rounded-2xl p-3 space-y-1">
-          <div className="px-3 py-2 mb-2 border-b border-[#232329]">
-            <div className="text-base font-bold text-[#e6d1a3] whitespace-nowrap">
-              NutriFit DZ
-            </div>
-            <div className="text-[11px] text-[#96938a] mt-0.5">
-              معاينة تغذية رياضية مخصصة
-            </div>
+      <div className="mx-auto max-w-[1440px] px-4 pt-4 sm:px-6 lg:px-8">
+        <header className="flex items-center justify-between gap-4 border-b border-[var(--nf-border)] pb-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--nf-green)] text-sm font-bold tracking-tight text-white">NF</div>
+            <div><div className="text-sm font-bold tracking-[.08em] text-[var(--nf-ink)]">NUTRIFIT <span className="font-normal text-[var(--nf-sage)]">ATELIER</span></div><div className="mt-0.5 text-[10px] text-[var(--nf-muted)]">تغذية دقيقة · تحضير مخصص</div></div>
           </div>
+          <div className="flex items-center gap-2">
+            <span className="hidden rounded-full border border-[var(--nf-border)] bg-[var(--nf-surface)] px-3 py-2 text-[10px] font-semibold text-[var(--nf-muted)] sm:inline-flex">مساحة العميل</span>
+            {API_ENABLED && session && <button type="button" onClick={logout} className="min-h-10 rounded-xl px-3 text-xs font-bold text-[var(--nf-muted)] hover:bg-[var(--nf-surface-2)]">خروج</button>}
+            {import.meta.env.DEV && <button type="button" onClick={enterOwnerWorkspace} className="min-h-10 rounded-xl border border-[var(--nf-border)] bg-[var(--nf-surface)] px-3 text-[11px] font-bold text-[var(--nf-green)]"><Sliders className="ml-1 inline h-3.5 w-3.5"/> الإدارة</button>}
+          </div>
+        </header>
 
-          {navItems.map((item) => {
-            const active = state.tab === item.id;
-            const isCart = item.id === 'cart';
-            return (
-              <button
-                key={item.id}
-                type="button"
-                data-cart-target={isCart ? 'true' : undefined}
-                onClick={() => navigate(item.id)}
-                className={`touch-press w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                  active
-                    ? 'bg-[#1c1a15] text-[#e6d1a3] border border-[#c8a96e]/40'
-                    : 'text-[#96938a] hover:text-[#f3f1ec] hover:bg-[#18181c]'
-                } ${isCart && cartAnimating ? 'animate-cart-land border-[#c8a96e]' : ''}`}
-              >
-                <span className="flex items-center gap-2.5">
-                  {item.icon}
-                  <span>{item.label}</span>
-                </span>
-                {item.badge !== undefined && (
-                  <span className="text-[11px] bg-[#c8a96e] text-[#141108] font-bold rounded-md px-1.5 py-0.5 leading-none tabular-nums">
-                    {item.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-
-          {import.meta.env.DEV && (
-            <div className="pt-2 mt-2 border-t border-[#232329]">
-              <button
-                type="button"
-                onClick={enterOwnerWorkspace}
-                className="touch-press w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-[#c8a96e] hover:bg-[#18181c] transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Sliders className="w-4 h-4" />
-                <span>واجهة المالك · معاينة تطوير</span>
-              </button>
+        <div className="grid gap-6 pt-6 lg:grid-cols-[230px_minmax(0,1fr)] lg:gap-8">
+          <aside className="hidden lg:block">
+            <div className="sticky top-6 rounded-[24px] border border-[var(--nf-border)] bg-[var(--nf-surface)] p-3">
+              <div className="px-3 pb-3 pt-2"><div className="text-[10px] font-bold tracking-[.16em] text-[var(--nf-dim)]">YOUR WORKSPACE</div><div className="mt-1 text-sm font-semibold text-[var(--nf-ink)]">القائمة الرئيسية</div></div>
+              <nav aria-label="التنقل الرئيسي" className="space-y-1">
+                {navItems.map((item) => {
+                  const active = state.tab === item.id;
+                  const isCart = item.id === 'cart';
+                  return <button key={item.id} type="button" data-cart-target={isCart ? 'true' : undefined} onClick={() => navigate(item.id)} className={`touch-press flex min-h-12 w-full items-center justify-between rounded-xl px-3 text-xs font-bold transition-colors ${active ? 'bg-[var(--nf-green-soft)] text-[var(--nf-green)]' : 'text-[var(--nf-muted)] hover:bg-[var(--nf-surface-2)]'} ${isCart && cartAnimating ? 'animate-cart-land' : ''}`}>
+                    <span className="flex items-center gap-3">{item.icon}<span>{item.label}</span></span>
+                    {item.badge !== undefined && <span className="min-w-5 rounded-full bg-[var(--nf-green)] px-1.5 py-1 text-center text-[10px] text-white tabular-nums">{item.badge}</span>}
+                  </button>;
+                })}
+              </nav>
+              <div className="mt-4 border-t border-[var(--nf-border)] px-3 pt-4"><div className="text-[10px] leading-5 text-[var(--nf-muted)]">خطتك، مكوناتك، وطلباتك في مساحة واحدة.</div></div>
             </div>
-          )}
-        </aside>
+          </aside>
 
-        {/* Main Screen Workspace */}
-        <main className="flex-1 min-w-0">
-          {state.tab === 'home' && (
-            <TodayView
-              state={state}
-              onNavigate={navigate}
-              onSelectMealSlot={selectMealSlotAndGoMenu}
-              onReopenCalc={() => setState((prev) => ({ ...prev, ob: 1 }))}
-            />
-          )}
-          {state.tab === 'menu' && (
-            <MenuView
-              state={state}
-              onUpdate={setState}
-              onNavigate={navigate}
-              onToast={showToast}
-              onCartPulse={triggerCartPulse}
-              pickerRequest={pickerRequest}
-            />
-          )}
-          {state.tab === 'cart' && (
-            <CartView
-              state={state}
-              onUpdate={setState}
-              onNavigate={navigate}
-              onSelectMealSlot={selectMealSlotAndGoMenu}
-              onToast={showToast}
-              apiEnabled={API_ENABLED}
-              authToken={session?.token}
-            />
-          )}
-          {state.tab === 'jr' && (
-            <JournalView state={state} onUpdate={setState} onToast={showToast} />
-          )}
-          {state.tab === 'me' && (
-            <AccountView
-              state={state}
-              onReopenCalc={() => setState((prev) => ({ ...prev, ob: 1 }))}
-              onResetAll={resetAll}
-              onToast={showToast}
-            />
-          )}
-        </main>
+          <main className="min-w-0">
+            {state.tab === 'home' && <TodayView state={state} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onReopenCalc={() => setState(prev => ({...prev, ob:1}))}/>}
+            {state.tab === 'menu' && <MenuView state={state} onUpdate={setState} onNavigate={navigate} onToast={showToast} onCartPulse={triggerCartPulse} pickerRequest={pickerRequest}/>}
+            {state.tab === 'cart' && <CartView state={state} onUpdate={setState} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onToast={showToast} apiEnabled={API_ENABLED} authToken={session?.token}/>}
+            {state.tab === 'jr' && <JournalView state={state} onUpdate={setState} onToast={showToast}/>}
+            {state.tab === 'me' && <AccountView state={state} onReopenCalc={() => setState(prev => ({...prev, ob:1}))} onResetAll={resetAll} onToast={showToast}/>}
+          </main>
+        </div>
       </div>
 
       {/* Mobile Fixed Bottom Navigation Bar */}
       <nav
         aria-label="التنقل الرئيسي"
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#09090b]/95 backdrop-blur-md border-t border-[#232329] px-1 pt-1 pb-[max(0.35rem,env(safe-area-inset-bottom))]"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--nf-border)] bg-[var(--nf-surface)]/95 px-2 pt-2 pb-[max(0.45rem,env(safe-area-inset-bottom))] shadow-[0_-8px_30px_rgba(32,39,34,.07)] backdrop-blur-xl"
       >
-        <div className="max-w-lg mx-auto flex items-center justify-around">
+        <div className="mx-auto flex max-w-lg items-center justify-around gap-1">
           {navItems.map((item) => {
             const active = state.tab === item.id;
             const isCart = item.id === 'cart';
@@ -555,14 +469,14 @@ export default function App() {
                 type="button"
                 data-cart-target={isCart ? 'true' : undefined}
                 onClick={() => navigate(item.id)}
-                className={`touch-press relative flex-1 min-h-[48px] flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold transition-colors cursor-pointer ${
-                  active ? 'text-[#c8a96e]' : 'text-[#66645e] hover:text-[#96938a]'
+                className={`touch-press relative flex-1 min-h-[52px] rounded-xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold transition-colors cursor-pointer ${
+                  active ? 'text-[var(--nf-green)]' : 'text-[var(--nf-muted)] hover:text-[var(--nf-ink)]'
                 } ${isCart && cartAnimating ? 'animate-cart-land text-[#e6d1a3]' : ''}`}
               >
                 {item.icon}
                 <span className="whitespace-nowrap">{item.label}</span>
                 {item.badge !== undefined && (
-                  <span className="absolute top-1 left-1/2 translate-x-2 text-[9px] bg-[#c8a96e] text-[#141108] font-bold rounded-md px-1 leading-tight tabular-nums">
+                  <span className="absolute top-1 left-1/2 translate-x-2 text-[9px] bg-[var(--nf-green)] text-white font-bold rounded-full px-1.5 leading-tight tabular-nums">
                     {item.badge}
                   </span>
                 )}
