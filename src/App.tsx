@@ -5,7 +5,7 @@ import { GlobalStatusBar } from './components/GlobalStatusBar';
 import { WelcomeView } from './components/WelcomeView';
 import { CalculatorWizard } from './components/CalculatorWizard';
 import { TodayView } from './components/TodayView';
-import { PremiumMealBuilder } from './components/PremiumMealBuilder';
+import { MealBuilder } from './components/MealBuilder';
 import { CartView } from './components/CartView';
 import { JournalView } from './components/JournalView';
 import { AccountView } from './components/AccountView';
@@ -20,6 +20,8 @@ import {
   TrendingUp,
   User,
   UtensilsCrossed,
+  Sun,
+  Moon,
 } from 'lucide-react';
 
 const STORAGE_KEY = 'nutrifit_dz_state_v2';
@@ -75,6 +77,8 @@ function loadState(): AppState {
 
 export default function App() {
   const [state, setState] = useState<AppState>(loadState);
+  const [theme, setTheme] = useState<'light'|'dark'>(() => (localStorage.getItem('nf_theme') as 'light'|'dark') || 'light');
+  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('nf_theme', theme); }, [theme]);
   const [showWelcome, setShowWelcome] = useState(() => state.ob === 0);
   const [session, setSession] = useState<ApiSession | null>(null);
   const [sessionReady, setSessionReady] = useState(!API_ENABLED);
@@ -339,7 +343,7 @@ export default function App() {
   ];
 
   if (API_ENABLED && !sessionReady) {
-    return <div className="min-h-screen bg-[#09090b] text-[#e6d1a3] flex items-center justify-center text-sm">جارٍ التحقق من الجلسة وتحميل ملفك…</div>;
+    return <div className="min-h-screen bg-[var(--nf-bg)] text-[var(--nf-ink)] flex items-center justify-center text-sm">جارٍ التحقق من الجلسة وتحميل ملفك…</div>;
   }
   if (API_ENABLED && !session) {
     return <AuthView onAuthenticated={handleAuthenticated} />;
@@ -421,6 +425,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <span className="hidden rounded-full border border-[var(--nf-border)] bg-[var(--nf-surface)] px-3 py-2 text-[10px] font-semibold text-[var(--nf-muted)] sm:inline-flex">مساحة العميل</span>
+            <button type="button" onClick={() => setTheme(t => t === "light" ? "dark" : "light")} aria-label={theme === "light" ? "تفعيل الوضع الداكن" : "تفعيل الوضع الفاتح"} className="grid h-10 w-10 place-items-center rounded-xl border border-[var(--nf-border)] bg-[var(--nf-surface)] text-[var(--nf-ink)]">{theme === "light" ? <Moon size={16}/> : <Sun size={16}/>}</button>
             {API_ENABLED && session && <button type="button" onClick={logout} className="min-h-10 rounded-xl px-3 text-xs font-bold text-[var(--nf-muted)] hover:bg-[var(--nf-surface-2)]">خروج</button>}
             {import.meta.env.DEV && <button type="button" onClick={enterOwnerWorkspace} className="min-h-10 rounded-xl border border-[var(--nf-border)] bg-[var(--nf-surface)] px-3 text-[11px] font-bold text-[var(--nf-green)]"><Sliders className="ml-1 inline h-3.5 w-3.5"/> الإدارة</button>}
           </div>
@@ -446,7 +451,7 @@ export default function App() {
 
           <main className="min-w-0">
             {state.tab === 'home' && <TodayView state={state} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onReopenCalc={() => setState(prev => ({...prev, ob:1}))}/>}
-            {state.tab === 'menu' && <PremiumMealBuilder state={state} onUpdate={setState} onNavigate={navigate} onToast={showToast} onCartPulse={triggerCartPulse} pickerRequest={pickerRequest}/>}
+            {state.tab === 'menu' && <MealBuilder state={state} onUpdate={setState} onNavigate={navigate} onToast={showToast} onCartPulse={triggerCartPulse} pickerRequest={pickerRequest}/>}
             {state.tab === 'cart' && <CartView state={state} onUpdate={setState} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onToast={showToast} apiEnabled={API_ENABLED} authToken={session?.token}/>}
             {state.tab === 'jr' && <JournalView state={state} onUpdate={setState} onToast={showToast}/>}
             {state.tab === 'me' && <AccountView state={state} onReopenCalc={() => setState(prev => ({...prev, ob:1}))} onResetAll={resetAll} onToast={showToast}/>}
