@@ -5,7 +5,7 @@ import { GlobalStatusBar } from './components/GlobalStatusBar';
 import { WelcomeView } from './components/WelcomeView';
 import { CalculatorWizard } from './components/CalculatorWizard';
 import { TodayView } from './components/TodayView';
-import { MenuView } from './components/MenuView';
+import { PremiumMealBuilder } from './components/PremiumMealBuilder';
 import { CartView } from './components/CartView';
 import { JournalView } from './components/JournalView';
 import { AccountView } from './components/AccountView';
@@ -446,7 +446,7 @@ export default function App() {
 
           <main className="min-w-0">
             {state.tab === 'home' && <TodayView state={state} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onReopenCalc={() => setState(prev => ({...prev, ob:1}))}/>}
-            {state.tab === 'menu' && <MenuView state={state} onUpdate={setState} onNavigate={navigate} onToast={showToast} onCartPulse={triggerCartPulse} pickerRequest={pickerRequest}/>}
+            {state.tab === 'menu' && <PremiumMealBuilder state={state} onUpdate={setState} onNavigate={navigate} onToast={showToast} onCartPulse={triggerCartPulse} pickerRequest={pickerRequest}/>}
             {state.tab === 'cart' && <CartView state={state} onUpdate={setState} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onToast={showToast} apiEnabled={API_ENABLED} authToken={session?.token}/>}
             {state.tab === 'jr' && <JournalView state={state} onUpdate={setState} onToast={showToast}/>}
             {state.tab === 'me' && <AccountView state={state} onReopenCalc={() => setState(prev => ({...prev, ob:1}))} onResetAll={resetAll} onToast={showToast}/>}
