@@ -1,0 +1,3154 @@
+
+==========================================================================================
+FILE: server/index.ts
+==========================================================================================
+import 'dotenv/config';
+import express, { Request, Response, NextFunction, RequestHandler } from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import bcrypt from 'bcryptjs';
+import jwt, { JwtPayload } from 'jsonwebtoken';
+import { Pool, PoolClient } from 'pg';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+type Role = 'customer' | 'admin' | 'kitchen' | 'delivery';
+type AuthRequest = Request & { auth?: { id: string; role: Role } };
+type Ingredient = { id:string; name:string; grams:number; price:number; kcal:number; protein:number; carbs:number; fat:number; basis:string; source:string };
+const PORT = Number(process.env.PORT || 3000);
+const DATABASE_URL = process.env.DATABASE_URL;
+const JWT_SECRET = process.env.JWT_SECRET || '';
+if (!DATABASE_URL) throw new Error('DATABASE_URL is required');
+if (JWT_SECRET.length < 32) throw new Error('JWT_SECRET must contain at least 32 characters');
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: true } : undefined,
+  max: Number(process.env.DB_POOL_MAX || 10),
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});
+const app = express();
+app.disable('x-powered-by');
+app.use(helmet());
+if (process.env.APP_ORIGIN) {
+  app.use(cors({ origin: process.env.APP_ORIGIN.split(',').map((x) => x.trim()), credentials: true }));
+}
+app.use(express.json({ limit: '256kb' }));
+const authLimiter = rateLimit({ windowMs: 900000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false });
+const apiLimiter = rateLimit({ windowMs: 60000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false });
+app.use('/api', apiLimiter);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+function asyncRoute(fn: (req: AuthRequest, res: Response) => Promise<void>): RequestHandler {
+  return (req, res, next) => { void fn(req as AuthRequest, res).catch(next); };
+}
+function authRequired(req: Request, res: Response, next: NextFunction) {
+  const token = req.header('authorization')?.replace(/^Bearer\s+/i, '');
+  if (!token) { res.status(401).json({ error: 'يلزم تسجيل الدخول.' }); return; }
+  try {
+    const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    if (!payload.sub || !['customer','admin','kitchen','delivery'].includes(String(payload.role))) {
+      res.status(401).json({ error: 'جلسة غير صالحة.' }); return;
+    }
+    (req as AuthRequest).auth = { id: String(payload.sub), role: payload.role as Role };
+    next();
+  } catch { res.status(401).json({ error: 'انتهت الجلسة أو أنها غير صالحة.' }); }
+}
+function requireRole(...roles: Role[]): RequestHandler {
+  return (req, res, next) => {
+    const auth = (req as AuthRequest).auth;
+    if (!auth || !roles.includes(auth.role)) { res.status(403).json({ error: 'ليس لديك صلاحية.' }); return; }
+    next();
+  };
+}
+function cleanText(value: unknown, min = 1, max = 500): string | null {
+  if (typeof value !== 'string') return null;
+  const result = value.trim();
+  return result.length >= min && result.length <= max ? result : null;
+}
+function bounded(value: unknown, min: number, max: number): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+}
+function tokenFor(user: { id: string; role: Role }) {
+  return jwt.sign({ role: user.role }, JWT_SECRET, { subject: user.id, expiresIn: '12h' });
+}
+function localDateAndHour() {
+  const parts: Record<string,string> = {};
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Algiers', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date()).forEach((part) => { parts[part.type] = part.value; });
+  return { date: parts.year + '-' + parts.month + '-' + parts.day, hour: Number(parts.hour) };
+}
+function addDays(date: string, days: number) {
+  const d = new Date(date + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0,10);
+}
+function orderNumber() {
+  return 'NF-' + Date.now().toString(36).toUpperCase() + '-' + Math.floor(100000 + Math.random() * 900000);
+}
+async function audit(client: PoolClient, actor: string, action: string, type: string, id: string, details = {}) {
+  await client.query(
+    'INSERT INTO audit_log (actor_id,action,entity_type,entity_id,details) VALUES ($1,$2,$3,$4,$5)',
+    [actor,action,type,id,JSON.stringify(details)]
+  );
+}
+
+app.get('/api/health', asyncRoute(async (_req,res) => {
+  await pool.query('SELECT 1');
+  res.json({ status:'ok', database:'connected', service:'nutrifit-api' });
+}));
+
+app.post('/api/auth/register', authLimiter, asyncRoute(async (req,res) => {
+  const name = cleanText(req.body?.name,2,100);
+  const email = cleanText(req.body?.email,5,254)?.toLowerCase();
+  const password = cleanText(req.body?.password,12,128);
+  if (!name || !email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !password) {
+    res.status(400).json({ error:'أدخل اسماً وبريداً صحيحاً وكلمة مرور من 12 حرفاً على الأقل.' }); return;
+  }
+  try {
+    const result = await pool.query(
+      'INSERT INTO app_users (name,email,password_hash,role) VALUES ($1,$2,$3,$4) RETURNING id,name,email,role',
+      [name,email,await bcrypt.hash(password,12),'customer']
+    );
+    res.status(201).json({ user:result.rows[0], token:tokenFor(result.rows[0]) });
+  } catch (error: any) {
+    if (error?.code === '23505') { res.status(409).json({ error:'هذا البريد مسجل بالفعل.' }); return; }
+    throw error;
+  }
+}));
+
+app.post('/api/auth/login', authLimiter, asyncRoute(async (req,res) => {
+  const email = cleanText(req.body?.email,5,254)?.toLowerCase();
+  const password = cleanText(req.body?.password,1,128);
+  if (!email || !password) { res.status(400).json({ error:'أدخل البريد وكلمة المرور.' }); return; }
+  const result = await pool.query('SELECT id,name,email,password_hash,role FROM app_users WHERE email=$1',[email]);
+  const user = result.rows[0];
+  if (!user || !(await bcrypt.compare(password,user.password_hash))) {
+    res.status(401).json({ error:'البريد أو كلمة المرور غير صحيحة.' }); return;
+  }
+  res.json({ user:{id:user.id,name:user.name,email:user.email,role:user.role}, token:tokenFor(user) });
+}));
+
+app.get('/api/auth/me', authRequired, asyncRoute(async (req,res) => {
+  const auth = (req as AuthRequest).auth!;
+  const result = await pool.query('SELECT id,name,email,role,created_at FROM app_users WHERE id=$1',[auth.id]);
+  if (!result.rowCount) { res.status(404).json({ error:'الحساب غير موجود.' }); return; }
+  res.json({ user:result.rows[0] });
+}));
+
+app.get('/api/foods', asyncRoute(async (_req,res) => {
+  const result = await pool.query(
+    "SELECT id,code,name_ar,name_fr,name_en,category,kcal_per_100,protein_per_100,carbs_per_100,fat_per_100,fiber_per_100,price_dzd_per_100,allergens,nutrition_basis,nutrition_source,source_record_id,edible_portion_pct,cooking_yield FROM foods WHERE active=true AND nutrition_verified=true AND nutrition_basis <> 'unspecified' ORDER BY category,name_ar"
+  );
+  res.json({ foods:result.rows });
+}));
+app.get('/api/zones', asyncRoute(async (_req,res) => {
+  const result = await pool.query('SELECT id,title,areas,service_hours,fee_dzd FROM delivery_zones WHERE active=true ORDER BY title');
+  res.json({ zones:result.rows });
+}));
+
+app.get('/api/profile', authRequired, asyncRoute(async (req,res) => {
+  const auth = (req as AuthRequest).auth!;
+  const result = await pool.query(
+    'SELECT u.id,u.name,u.email,u.allergens,p.sex,p.age,p.height_cm,p.weight_kg,p.target_weight_kg,p.activity_band,p.pal,p.goal,p.goal_adjustment_pct,p.health_flags,p.lbm_kg,p.lbm_reliability_pct,p.lbm_method,p.profile_version FROM app_users u LEFT JOIN customer_profiles p ON p.user_id=u.id WHERE u.id=$1',
+    [auth.id]
+  );
+  res.json({ profile:result.rows[0] ?? null });
+}));
+
+app.put('/api/profile', authRequired, requireRole('customer'), asyncRoute(async (req,res) => {
+  const auth = (req as AuthRequest).auth!;
+  const b = req.body ?? {};
+  const allowed = new Set(['gluten','eggs','fish','milk','nuts']);
+  const allergens = Array.isArray(b.allergens) ? b.allergens : [];
+  if (allergens.some((x: unknown) => typeof x !== 'string' || !allowed.has(x))) {
+    res.status(400).json({ error:'قائمة مسببات الحساسية غير صالحة.' }); return;
+  }
+  const sex = b.sex === 'm' || b.sex === 'f' ? b.sex : null;
+  const age = bounded(b.age,18,100), height = bounded(b.heightCm,120,230);
+  const weight = bounded(b.weightKg,30,300), target = bounded(b.targetWeightKg,30,300);
+  const band = ['S','L','A','V'].includes(b.activityBand) ? b.activityBand : null;
+  const pal = bounded(b.pal,1.2,2.4);
+  const palRanges: Record<string,[number,number]> = { S:[1.2,1.39], L:[1.4,1.69], A:[1.7,1.99], V:[2.0,2.4] };
+  const palValid = Boolean(band && pal !== null && pal >= palRanges[band][0] && pal <= palRanges[band][1]);
+  const goal = ['bulk','cut','recomp','perf'].includes(b.goal) ? b.goal : null;
+  const adjustment = bounded(b.goalAdjustmentPct,-25,25);
+  const healthFlags = b.healthFlags && typeof b.healthFlags === 'object' && !Array.isArray(b.healthFlags) ? b.healthFlags : {};
+  const healthFlagKeys = ['preg','kid','dia','ed'];
+  const healthFlagsValid = healthFlagKeys.every((key) => typeof healthFlags[key] === 'boolean');
+  const rawLbm = b.lbmKg === null || b.lbmKg === undefined || Number(b.lbmKg) === 0 ? null : bounded(b.lbmKg,1,300);
+  const reliability = b.lbmReliabilityPct === null || b.lbmReliabilityPct === undefined ? null : bounded(b.lbmReliabilityPct,0,100);
+  const lbmMethod = ['none','dexa','inbody','other'].includes(b.lbmMethod) ? b.lbmMethod : 'none';
+  const lbm = rawLbm !== null && reliability !== null && reliability >= 70 && lbmMethod !== 'none' ? rawLbm : null;
+  if (!sex || age === null || height === null || weight === null || target === null ||
+      !band || pal === null || !palValid || !goal || adjustment === null || !healthFlagsValid ||
+      (b.lbmKg !== null && b.lbmKg !== undefined && Number(b.lbmKg) !== 0 && rawLbm === null) ||
+      (rawLbm !== null && rawLbm > weight)) {
+    res.status(400).json({ error:'بيانات الملف ناقصة أو خارج الحدود.' }); return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('UPDATE app_users SET allergens=$1 WHERE id=$2',[allergens,auth.id]);
+    await client.query(
+      'INSERT INTO customer_profiles (user_id,sex,age,height_cm,weight_kg,target_weight_kg,activity_band,pal,goal,goal_adjustment_pct,health_flags,lbm_kg,lbm_reliability_pct,lbm_method) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (user_id) DO UPDATE SET sex=EXCLUDED.sex,age=EXCLUDED.age,height_cm=EXCLUDED.height_cm,weight_kg=EXCLUDED.weight_kg,target_weight_kg=EXCLUDED.target_weight_kg,activity_band=EXCLUDED.activity_band,pal=EXCLUDED.pal,goal=EXCLUDED.goal,goal_adjustment_pct=EXCLUDED.goal_adjustment_pct,health_flags=EXCLUDED.health_flags,lbm_kg=EXCLUDED.lbm_kg,lbm_reliability_pct=EXCLUDED.lbm_reliability_pct,lbm_method=EXCLUDED.lbm_method,profile_version=customer_profiles.profile_version+1,updated_at=now()',
+      [auth.id,sex,age,height,weight,target,band,pal,goal,adjustment,JSON.stringify(healthFlags),lbm,reliability,lbmMethod]
+    );
+    await audit(client,auth.id,'profile.updated','customer_profile',auth.id);
+    await client.query('COMMIT');
+    res.json({ saved:true });
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.post('/api/orders', authRequired, requireRole('customer'), asyncRoute(async (req,res) => {
+  const auth = (req as AuthRequest).auth!;
+  const b = req.body ?? {};
+  const zoneId = cleanText(b.zoneId,1,80);
+  const mealCount = bounded(b.mealCount,1,8);
+  const note = cleanText(b.note ?? '',0,1000);
+  const items = b.items;
+  if (!zoneId || mealCount === null || !Number.isInteger(mealCount) || note === null ||
+      !Array.isArray(items) || items.length < 1 || items.length > 64) {
+    res.status(400).json({ error:'بيانات الطلب غير مكتملة.' }); return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const configResult = await client.query('SELECT * FROM pricing_config WHERE id=1 FOR UPDATE');
+    const config = configResult.rows[0];
+    if (!config || Number(config.daily_capacity_boxes) < 1) {
+      await client.query('ROLLBACK');
+      res.status(503).json({ error:'الطاقة التشغيلية لم تعتمد بعد؛ لا نستقبل طلبات حالياً.' }); return;
+    }
+    const zoneResult = await client.query('SELECT id,title,fee_dzd FROM delivery_zones WHERE id=$1 AND active=true FOR SHARE',[zoneId]);
+    if (!zoneResult.rowCount) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error:'منطقة الخدمة غير متاحة أو لم تعد معتمدة.' }); return;
+    }
+    const customer = await client.query('SELECT allergens FROM app_users WHERE id=$1 FOR SHARE',[auth.id]);
+    const profileResult = await client.query(
+      'SELECT age,health_flags,weight_kg,height_cm,goal FROM customer_profiles WHERE user_id=$1 FOR SHARE',
+      [auth.id]
+    );
+    const customerProfile = profileResult.rows[0];
+    if (!customer.rowCount || !customerProfile || !customerProfile.age || !customerProfile.weight_kg || !customerProfile.height_cm) {
+      throw new Error('PROFILE_REQUIRED');
+    }
+    const health = customerProfile.health_flags ?? {};
+    if (Number(customerProfile.age) < 18 || health.preg === true || health.kid === true || health.dia === true || health.ed === true) {
+      throw new Error('HEALTH_REVIEW_REQUIRED');
+    }
+    const bmi = Number(customerProfile.weight_kg) / Math.pow(Number(customerProfile.height_cm) / 100,2);
+    if (customerProfile.goal === 'cut' && bmi < 18.5) throw new Error('CUT_GOAL_BLOCKED');
+    const blocked = new Set<string>(customer.rows[0]?.allergens ?? []);
+    const normalized: Array<{slot:number;slotName:string;label:string;grams:number;kcal:number;protein:number;carbs:number;fat:number;ingredients:Ingredient[]}> = [];
+    const slots = new Set<number>();
+
+    for (const item of items) {
+      const slot = bounded(item?.slot,0,mealCount-1);
+      const slotName = cleanText(item?.slotName,1,80);
+      if (slot === null || !Number.isInteger(slot) || !slotName) throw new Error('INVALID_ITEM');
+      slots.add(slot);
+      let ingredients: Ingredient[] = [];
+      let label = '';
+      if (item.kind === 'food') {
+        const grams = bounded(item.grams,1,1500);
+        if (grams === null) throw new Error('INVALID_GRAMS');
+        const found = await client.query(
+          "SELECT id,name_ar,kcal_per_100,protein_per_100,carbs_per_100,fat_per_100,price_dzd_per_100,allergens,nutrition_verified,nutrition_basis,nutrition_source FROM foods WHERE id=$1 AND active=true FOR SHARE",
+          [item.id]
+        );
+        const food = found.rows[0];
+        if (!food) throw new Error('FOOD_UNAVAILABLE');
+        if (!food.nutrition_verified || food.nutrition_basis === 'unspecified' || !food.nutrition_source) throw new Error('FOOD_NOT_VERIFIED');
+        if ((food.allergens ?? []).some((x:string) => blocked.has(x))) throw new Error('ALLERGEN_BLOCK');
+        const factor = grams/100;
+        ingredients = [{id:food.id,name:food.name_ar,grams,price:Number(food.price_dzd_per_100),
+          kcal:Number(food.kcal_per_100)*factor,protein:Number(food.protein_per_100)*factor,
+          carbs:Number(food.carbs_per_100)*factor,fat:Number(food.fat_per_100)*factor,basis:food.nutrition_basis,source:food.nutrition_source}];
+        label = food.name_ar;
+      } else if (item.kind === 'dish') {
+        const multiplier = bounded(item.multiplier ?? 1,0.1,4);
+        if (multiplier === null) throw new Error('INVALID_MULTIPLIER');
+        const found = await client.query(
+          "SELECT d.name_ar,di.grams,f.id AS food_id,f.name_ar AS food_name,f.kcal_per_100,f.protein_per_100,f.carbs_per_100,f.fat_per_100,f.price_dzd_per_100,f.allergens,f.nutrition_verified,f.nutrition_basis,f.nutrition_source FROM dishes d JOIN dish_ingredients di ON di.dish_id=d.id JOIN foods f ON f.id=di.food_id WHERE d.id=$1 AND d.active=true AND f.active=true FOR SHARE OF d,f",
+          [item.id]
+        );
+        if (!found.rowCount) throw new Error('DISH_UNAVAILABLE');
+        label = found.rows[0].name_ar;
+        for (const row of found.rows) {
+          if (!row.nutrition_verified || row.nutrition_basis === 'unspecified' || !row.nutrition_source) throw new Error('FOOD_NOT_VERIFIED');
+          if ((row.allergens ?? []).some((x:string) => blocked.has(x))) throw new Error('ALLERGEN_BLOCK');
+          const grams = Number(row.grams)*multiplier, factor = grams/100;
+          ingredients.push({id:row.food_id,name:row.food_name,grams,price:Number(row.price_dzd_per_100),
+            kcal:Number(row.kcal_per_100)*factor,protein:Number(row.protein_per_100)*factor,
+            carbs:Number(row.carbs_per_100)*factor,fat:Number(row.fat_per_100)*factor,basis:row.nutrition_basis,source:row.nutrition_source});
+        }
+      } else if (item.kind === 'custom') {
+        const entries = item.ingredients;
+        if (!Array.isArray(entries) || entries.length < 1 || entries.length > 30) throw new Error('INVALID_CUSTOM_INGREDIENTS');
+        label = cleanText(item.label,2,160) ?? 'وجبة مخصصة';
+        for (const entry of entries) {
+          const grams = bounded(entry?.grams,1,1500);
+          const foodId = cleanText(entry?.foodId,1,80);
+          if (grams === null || !foodId) throw new Error('INVALID_CUSTOM_INGREDIENTS');
+          const found = await client.query(
+            "SELECT id,name_ar,kcal_per_100,protein_per_100,carbs_per_100,fat_per_100,price_dzd_per_100,allergens,nutrition_verified,nutrition_basis,nutrition_source FROM foods WHERE id=$1 AND active=true FOR SHARE",
+            [foodId]
+          );
+          const food = found.rows[0];
+          if (!food) throw new Error('FOOD_UNAVAILABLE');
+          if (!food.nutrition_verified || food.nutrition_basis === 'unspecified' || !food.nutrition_source) throw new Error('FOOD_NOT_VERIFIED');
+          if ((food.allergens ?? []).some((x:string) => blocked.has(x))) throw new Error('ALLERGEN_BLOCK');
+          const factor = grams/100;
+          ingredients.push({id:food.id,name:food.name_ar,grams,price:Number(food.price_dzd_per_100),
+            kcal:Number(food.kcal_per_100)*factor,protein:Number(food.protein_per_100)*factor,
+            carbs:Number(food.carbs_per_100)*factor,fat:Number(food.fat_per_100)*factor,basis:food.nutrition_basis,source:food.nutrition_source});
+        }
+      } else throw new Error('INVALID_KIND');
+
+      const totals = ingredients.reduce((sum,x) => ({
+        grams:sum.grams+x.grams,kcal:sum.kcal+x.kcal,protein:sum.protein+x.protein,
+        carbs:sum.carbs+x.carbs,fat:sum.fat+x.fat,
+      }),{grams:0,kcal:0,protein:0,carbs:0,fat:0});
+      normalized.push({slot,slotName,label,...totals,ingredients});
+    }
+    if (slots.size !== mealCount) throw new Error('INCOMPLETE_SLOTS');
+    for (let slot=0;slot<mealCount;slot++) if (!slots.has(slot)) throw new Error('INCOMPLETE_SLOTS');
+
+    const now = localDateAndHour();
+    const deliveryDate = addDays(now.date,now.hour >= Number(config.cutoff_hour) ? 2 : 1);
+    const capacity = await client.query("SELECT COALESCE(SUM(meal_count),0)::int AS used FROM customer_orders WHERE delivery_date=$1 AND order_status='confirmed'",[deliveryDate]);
+    const used = Number(capacity.rows[0].used);
+    const orderStatus = used + mealCount > Number(config.daily_capacity_boxes) ? 'waitlisted' : 'confirmed';
+    const zone = zoneResult.rows[0];
+    const flatIngredients = normalized.flatMap((item) => item.ingredients);
+    const ingredientCost = flatIngredients.reduce((sum,x) => sum+x.price*x.grams/100,0);
+    const handlingFee = ingredientCost*Number(config.handling_pct)/100;
+    const serviceFee = mealCount*Number(config.service_fee_per_meal);
+    const macros = normalized.reduce((sum,item) => ({
+      kcal:sum.kcal+item.kcal,protein:sum.protein+item.protein,carbs:sum.carbs+item.carbs,fat:sum.fat+item.fat,
+    }),{kcal:0,protein:0,carbs:0,fat:0});
+    const number = orderNumber();
+    const inserted = await client.query(
+      'INSERT INTO customer_orders (order_number,customer_id,delivery_date,delivery_zone_id,delivery_zone_title,delivery_fee_dzd,meal_count,customer_note,ingredient_cost_dzd,handling_fee_dzd,service_fee_dzd,total_dzd,kcal_total,protein_total,carbs_total,fat_total,order_status,production_stage) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id,order_number,delivery_date,order_status,total_dzd,production_stage,delivery_fee_dzd,ingredient_cost_dzd,handling_fee_dzd,service_fee_dzd,kcal_total,protein_total,carbs_total,fat_total',
+      [number,auth.id,deliveryDate,zone.id,zone.title,Number(zone.fee_dzd),mealCount,note,
+       ingredientCost,handlingFee,serviceFee,ingredientCost+handlingFee+serviceFee+Number(zone.fee_dzd),
+       macros.kcal,macros.protein,macros.carbs,macros.fat,orderStatus,orderStatus==='confirmed'?'queued':null]
+    );
+    const order = inserted.rows[0];
+    for (const item of normalized) {
+      const line = await client.query(
+        'INSERT INTO order_items (order_id,slot,slot_name,label,grams,kcal,protein,carbs,fat) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',
+        [order.id,item.slot,item.slotName,item.label,item.grams,item.kcal,item.protein,item.carbs,item.fat]
+      );
+      for (const ingredient of item.ingredients) {
+        await client.query(
+          'INSERT INTO order_item_ingredients (order_item_id,food_id,food_name_snapshot,grams,unit_price_snapshot,kcal_snapshot,protein_snapshot,carbs_snapshot,fat_snapshot,nutrition_basis_snapshot,nutrition_source_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+          [line.rows[0].id,ingredient.id,ingredient.name,ingredient.grams,ingredient.price,
+           ingredient.kcal,ingredient.protein,ingredient.carbs,ingredient.fat,ingredient.basis,ingredient.source]
+        );
+      }
+    }
+    await audit(client,auth.id,'order.created','customer_order',order.id,{number,status:orderStatus,deliveryDate});
+    await client.query('COMMIT');
+    res.status(201).json({ order });
+  } catch (error: any) {
+    await client.query('ROLLBACK');
+    const messages: Record<string,string> = {
+      INVALID_ITEM:'أحد عناصر الطلب غير صالح.',INVALID_GRAMS:'وزن أحد المكونات خارج النطاق.',
+      PROFILE_REQUIRED:'أكمل ملفك الغذائي قبل إرسال الطلب.',
+      HEALTH_REVIEW_REQUIRED:'يتطلب ملفك مراجعة مختص قبل قبول الطلب؛ لا يمكن تجاوزه آلياً.',
+      CUT_GOAL_BLOCKED:'لا يمكن قبول هدف خفض الوزن عند مؤشر كتلة جسم أقل من 18.5.',
+      FOOD_UNAVAILABLE:'أحد المكونات غير متاح.',FOOD_NOT_VERIFIED:'لا يمكن طلب مكوّن غير موثق غذائياً.',
+      ALLERGEN_BLOCK:'يتضمن الطلب مسبب حساسية مسجلاً في ملفك.',
+      INVALID_MULTIPLIER:'حجم أحد الأطباق غير صالح.',DISH_UNAVAILABLE:'أحد الأطباق غير متاح.',
+      INVALID_KIND:'نوع عنصر الطلب غير مدعوم.',INVALID_CUSTOM_INGREDIENTS:'مكونات الوجبة المخصصة أو أوزانها غير صالحة.',INCOMPLETE_SLOTS:'يجب أن تحتوي كل وجبة على عنصر واحد على الأقل.',
+    };
+    if (messages[error?.message]) { res.status(400).json({error:messages[error.message]}); return; }
+    throw error;
+  } finally { client.release(); }
+}));
+
+app.delete('/api/orders/:id', authRequired, requireRole('customer'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف الطلب غير صالح.'}); return; }
+  const auth = (req as AuthRequest).auth!;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      "SELECT id,order_status,production_stage FROM customer_orders WHERE id=$1 AND customer_id=$2 FOR UPDATE",
+      [req.params.id,auth.id]
+    );
+    if (!found.rowCount) {
+      await client.query('ROLLBACK');
+      res.status(404).json({error:'الطلب غير موجود في حسابك.'}); return;
+    }
+    const order = found.rows[0];
+    if (!['confirmed','waitlisted'].includes(order.order_status) ||
+        (order.production_stage && order.production_stage !== 'queued')) {
+      await client.query('ROLLBACK');
+      res.status(409).json({error:'بدأ تجهيز الطلب أو لم يعد قابلاً للإلغاء من الحساب. تواصل مع خدمة العملاء.'}); return;
+    }
+    await client.query(
+      "UPDATE customer_orders SET order_status='cancelled',production_stage=NULL,updated_at=now() WHERE id=$1",
+      [order.id]
+    );
+    await audit(client,auth.id,'order.cancelled','customer_order',order.id);
+    await client.query('COMMIT');
+    res.json({cancelled:true,id:order.id});
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.get('/api/orders', authRequired, requireRole('customer'), asyncRoute(async (req,res) => {
+  const auth = (req as AuthRequest).auth!;
+  const result = await pool.query(
+    "SELECT id,order_number,delivery_date,delivery_zone_title,delivery_fee_dzd,meal_count,customer_note,ingredient_cost_dzd,handling_fee_dzd,service_fee_dzd,total_dzd,kcal_total,protein_total,carbs_total,fat_total,order_status,production_stage,payment_status,created_at FROM customer_orders WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100",
+    [auth.id]
+  );
+  const ids = result.rows.map((x) => x.id);
+  const items = ids.length ? await pool.query(
+    "SELECT oi.*,COALESCE(json_agg(json_build_object('name',ii.food_name_snapshot,'grams',ii.grams,'basis',ii.nutrition_basis_snapshot,'source',ii.nutrition_source_snapshot)) FILTER (WHERE ii.id IS NOT NULL),'[]'::json) AS ingredients FROM order_items oi LEFT JOIN order_item_ingredients ii ON ii.order_item_id=oi.id WHERE oi.order_id=ANY($1::uuid[]) GROUP BY oi.id ORDER BY oi.slot,oi.id",
+    [ids]
+  ) : { rows:[] as any[] };
+  const grouped = new Map<string,any[]>();
+  for (const item of items.rows) grouped.set(item.order_id,[...(grouped.get(item.order_id) ?? []),item]);
+  res.json({ orders:result.rows.map((order) => ({...order,items:grouped.get(order.id) ?? []})) });
+}));
+
+app.get('/api/kitchen/orders', authRequired, requireRole('admin','kitchen'), asyncRoute(async (req,res) => {
+  const date = cleanText(req.query.date,10,10);
+  const params: unknown[] = [];
+  let where = "WHERE o.order_status='confirmed'";
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) { params.push(date); where += ' AND o.delivery_date=$1'; }
+  const result = await pool.query(
+    'SELECT o.id,o.order_number,o.delivery_date,o.delivery_zone_title,o.meal_count,o.production_stage,o.customer_note,u.name AS customer_name FROM customer_orders o JOIN app_users u ON u.id=o.customer_id ' + where + ' ORDER BY o.delivery_date,o.created_at',
+    params
+  );
+  const ids = result.rows.map((order) => order.id);
+  const lines = ids.length ? await pool.query(
+    "SELECT oi.*,COALESCE(json_agg(json_build_object('name',ii.food_name_snapshot,'grams',ii.grams,'basis',ii.nutrition_basis_snapshot,'source',ii.nutrition_source_snapshot)) FILTER (WHERE ii.id IS NOT NULL),'[]'::json) AS ingredients FROM order_items oi LEFT JOIN order_item_ingredients ii ON ii.order_item_id=oi.id WHERE oi.order_id=ANY($1::uuid[]) GROUP BY oi.id ORDER BY oi.slot,oi.id",
+    [ids]
+  ) : { rows:[] as any[] };
+  const grouped = new Map<string,any[]>();
+  for (const line of lines.rows) grouped.set(line.order_id,[...(grouped.get(line.order_id) ?? []),line]);
+  res.json({ orders:result.rows.map((order) => ({...order,items:grouped.get(order.id) ?? []})) });
+}));
+
+app.patch('/api/kitchen/orders/:id/stage', authRequired, requireRole('admin','kitchen','delivery'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف الطلب غير صالح.'}); return; }
+  const auth = (req as AuthRequest).auth!;
+  const stages = ['queued','preparing','packed','out_for_delivery','delivered'];
+  const stage = req.body?.stage;
+  if (!stages.includes(stage)) { res.status(400).json({error:'مرحلة تشغيل غير صالحة.'}); return; }
+  if (auth.role === 'kitchen' && !['queued','preparing','packed'].includes(stage)) {
+    res.status(403).json({error:'حساب المطبخ لا يحدّث مراحل التوصيل.'}); return;
+  }
+  if (auth.role === 'delivery' && !['out_for_delivery','delivered'].includes(stage)) {
+    res.status(403).json({error:'حساب التوصيل لا يحدّث مراحل المطبخ.'}); return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      "SELECT id,production_stage FROM customer_orders WHERE id=$1 AND order_status='confirmed' AND ($2 <> 'delivery' OR delivery_user_id=$3) FOR UPDATE",
+      [req.params.id,auth.role,auth.id]
+    );
+    if (!found.rowCount) { await client.query('ROLLBACK'); res.status(404).json({error:'الطلب غير موجود.'}); return; }
+    const current = found.rows[0].production_stage ?? 'queued';
+    const currentIndex = stages.indexOf(current);
+    const nextIndex = stages.indexOf(stage);
+    if (nextIndex < currentIndex) {
+      await client.query('ROLLBACK'); res.status(409).json({error:'لا يمكن إرجاع الطلب إلى مرحلة سابقة.'}); return;
+    }
+    if (auth.role !== 'admin' && nextIndex > currentIndex + 1) {
+      await client.query('ROLLBACK'); res.status(409).json({error:'يجب إكمال مرحلة التشغيل الحالية قبل الانتقال إلى المرحلة التالية.'}); return;
+    }
+    await client.query('UPDATE customer_orders SET production_stage=$1,updated_at=now() WHERE id=$2',[stage,req.params.id]);
+    await audit(client,auth.id,'order.stage.updated','customer_order',req.params.id,{from:current,to:stage});
+    await client.query('COMMIT');
+    res.json({updated:true,stage});
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+
+app.get('/api/dishes', asyncRoute(async (_req,res) => {
+  const result = await pool.query(
+    "SELECT d.id,d.name_ar,d.description,COALESCE(json_agg(json_build_object('foodId',f.id,'name',f.name_ar,'grams',di.grams,'kcal',f.kcal_per_100,'protein',f.protein_per_100,'carbs',f.carbs_per_100,'fat',f.fat_per_100)) FILTER (WHERE f.id IS NOT NULL),'[]'::json) AS ingredients FROM dishes d JOIN dish_ingredients di ON di.dish_id=d.id JOIN foods f ON f.id=di.food_id WHERE d.active=true AND f.active=true AND f.nutrition_verified=true AND f.nutrition_basis<>'unspecified' GROUP BY d.id ORDER BY d.name_ar"
+  );
+  res.json({dishes:result.rows});
+}));
+
+app.get('/api/admin/staff', authRequired, requireRole('admin'), asyncRoute(async (_req,res) => {
+  const result = await pool.query("SELECT id,name,email,role,created_at FROM app_users WHERE role IN ('kitchen','delivery','admin') ORDER BY role,name");
+  res.json({staff:result.rows});
+}));
+
+app.get('/api/admin/customers', authRequired, requireRole('admin'), asyncRoute(async (_req,res) => {
+  const result = await pool.query(
+    "SELECT u.id,u.name,u.email,u.role,u.allergens,u.created_at,p.goal,p.weight_kg,p.height_cm,p.activity_band,(SELECT count(*)::int FROM customer_orders o WHERE o.customer_id=u.id) AS orders_count FROM app_users u LEFT JOIN customer_profiles p ON p.user_id=u.id WHERE u.role='customer' ORDER BY u.created_at DESC LIMIT 250"
+  );
+  res.json({customers:result.rows});
+}));
+
+app.patch('/api/admin/staff/:id/role', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف الحساب غير صالح.'}); return; }
+  const auth = (req as AuthRequest).auth!;
+  const nextRole = req.body?.role;
+  if (!['customer','kitchen','delivery','admin'].includes(nextRole)) {
+    res.status(400).json({error:'الدور المطلوب غير صالح.'}); return;
+  }
+  if (req.params.id === auth.id && nextRole !== 'admin') {
+    res.status(409).json({error:'لا يمكنك تغيير صلاحية حسابك الإداري النشط بنفسك.'}); return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      'UPDATE app_users SET role=$1 WHERE id=$2 RETURNING id,name,email,role',
+      [nextRole,req.params.id]
+    );
+    if (!result.rowCount) { await client.query('ROLLBACK'); res.status(404).json({error:'الحساب غير موجود.'}); return; }
+    await audit(client,auth.id,'user.role.updated','app_user',req.params.id,{role:nextRole});
+    await client.query('COMMIT');
+    res.json({user:result.rows[0]});
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.get('/api/admin/audit', authRequired, requireRole('admin'), asyncRoute(async (_req,res) => {
+  const result = await pool.query(
+    'SELECT a.id,a.action,a.entity_type,a.entity_id,a.details,a.created_at,u.name AS actor_name,u.email AS actor_email FROM audit_log a LEFT JOIN app_users u ON u.id=a.actor_id ORDER BY a.created_at DESC LIMIT 150'
+  );
+  res.json({logs:result.rows});
+}));
+
+app.get('/api/admin/settings', authRequired, requireRole('admin'), asyncRoute(async (_req,res) => {
+  const result = await pool.query('SELECT handling_pct,service_fee_per_meal,cutoff_hour,daily_capacity_boxes,updated_at FROM pricing_config WHERE id=1');
+  res.json({settings:result.rows[0] ?? null});
+}));
+
+app.patch('/api/admin/settings', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  const b = req.body ?? {};
+  const handling = bounded(b.handlingPct,0,100);
+  const service = bounded(b.serviceFeePerMeal,0,100000);
+  const cutoff = bounded(b.cutoffHour,8,23);
+  const capacity = bounded(b.dailyCapacityBoxes,0,10000);
+  if (handling === null || service === null || cutoff === null || capacity === null ||
+      !Number.isInteger(cutoff) || !Number.isInteger(capacity)) {
+    res.status(400).json({error:'إعدادات الأسعار أو الطاقة التشغيلية غير صالحة.'}); return;
+  }
+  const result = await pool.query(
+    'UPDATE pricing_config SET handling_pct=$1,service_fee_per_meal=$2,cutoff_hour=$3,daily_capacity_boxes=$4,updated_at=now() WHERE id=1 RETURNING handling_pct,service_fee_per_meal,cutoff_hour,daily_capacity_boxes,updated_at',
+    [handling,service,cutoff,capacity]
+  );
+  res.json({settings:result.rows[0]});
+}));
+
+app.get('/api/admin/foods', authRequired, requireRole('admin'), asyncRoute(async (_req,res) => {
+  const result = await pool.query('SELECT * FROM foods ORDER BY created_at DESC');
+  res.json({foods:result.rows});
+}));
+
+app.post('/api/admin/foods', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  const auth = (req as AuthRequest).auth!;
+  const b = req.body ?? {};
+  const name = cleanText(b.name,2,160);
+  const nameFr = cleanText(b.nameFr ?? '',0,160);
+  const nameEn = cleanText(b.nameEn ?? '',0,160);
+  const category = ['protein','carb','fat','veg','juice'].includes(b.category) ? b.category : null;
+  const basis = ['raw','cooked','as_sold','unspecified'].includes(b.nutritionBasis) ? b.nutritionBasis : null;
+  const source = cleanText(b.nutritionSource ?? '',0,500);
+  const sourceId = cleanText(b.sourceRecordId ?? '',0,160);
+  const ediblePortionPct = b.ediblePortionPct === undefined || b.ediblePortionPct === '' || b.ediblePortionPct === null
+    ? null
+    : bounded(b.ediblePortionPct,1,100);
+  const cookingYield = b.cookingYield === undefined || b.cookingYield === '' || b.cookingYield === null
+    ? null
+    : bounded(b.cookingYield,0.05,5);
+  const values = ['kcal','protein','carbs','fat','fiber','priceDzdPer100'].map((key) => bounded(b[key],0,100000));
+  const allowed = new Set(['gluten','eggs','fish','milk','nuts']);
+  const allergens = Array.isArray(b.allergens) && b.allergens.every((x:unknown) => typeof x === 'string' && allowed.has(x)) ? b.allergens : null;
+  if (!name || nameFr === null || nameEn === null || !category || !basis || source === null || sourceId === null ||
+      values.some((x) => x === null) || !allergens ||
+      (b.ediblePortionPct !== undefined && b.ediblePortionPct !== '' && b.ediblePortionPct !== null && ediblePortionPct === null) ||
+      (b.cookingYield !== undefined && b.cookingYield !== '' && b.cookingYield !== null && cookingYield === null)) {
+    res.status(400).json({error:'أدخل الاسم والتصنيف والقيم والمصدر وحالة الوزن ومسببات الحساسية بشكل صحيح.'}); return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      'INSERT INTO foods (name_ar,name_fr,name_en,category,kcal_per_100,protein_per_100,carbs_per_100,fat_per_100,fiber_per_100,price_dzd_per_100,allergens,nutrition_verified,nutrition_basis,nutrition_source,source_record_id,edible_portion_pct,cooking_yield,active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,false,$12,$13,$14,$15,$16,false) RETURNING id,name_ar,nutrition_verified,nutrition_basis,active',
+      [name,nameFr || null,nameEn || null,category,...values,allergens,basis,source || null,sourceId || null,ediblePortionPct,cookingYield]
+    );
+    await audit(client,auth.id,'food.created','food',result.rows[0].id,{name,category,basis});
+    await client.query('COMMIT');
+    res.status(201).json({food:result.rows[0],note:'حُفظ العنصر كمسودة غير موثقة وغير نشطة.'});
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.patch('/api/admin/foods/:id/verification', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف المكوّن غير صالح.'}); return; }
+  const auth = (req as AuthRequest).auth!;
+  const verified = req.body?.verified;
+  const basis = ['raw','cooked','as_sold','unspecified'].includes(req.body?.nutritionBasis) ? req.body.nutritionBasis : null;
+  const source = cleanText(req.body?.nutritionSource ?? '',0,500);
+  const sourceId = cleanText(req.body?.sourceRecordId ?? '',0,160);
+  if (typeof verified !== 'boolean' || source === null || sourceId === null ||
+      (verified && (!basis || basis === 'unspecified' || source.length < 3))) {
+    res.status(400).json({error:'يتطلب اعتماد العنصر مصدرًا علميًا وحالة وزن محددة (نيء/مطبوخ/كما يباع).'}); return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      'UPDATE foods SET nutrition_verified=$1,nutrition_basis=$2,nutrition_source=$3,source_record_id=$4,active=CASE WHEN $1=false THEN false ELSE active END,updated_at=now() WHERE id=$5 RETURNING id,nutrition_verified,nutrition_basis,active',
+      [verified,basis ?? 'unspecified',source || null,sourceId || null,req.params.id]
+    );
+    if (!result.rowCount) { await client.query('ROLLBACK'); res.status(404).json({error:'العنصر غير موجود.'}); return; }
+    await audit(client,auth.id,verified ? 'food.verified' : 'food.unverified','food',req.params.id,{basis,source});
+    await client.query('COMMIT');
+    res.json({food:result.rows[0]});
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.get('/api/admin/dishes', authRequired, requireRole('admin'), asyncRoute(async (_req,res) => {
+  const result = await pool.query(
+    "SELECT d.id,d.name_ar,d.description,d.active,COALESCE(json_agg(json_build_object('foodId',f.id,'name',f.name_ar,'grams',di.grams)) FILTER (WHERE f.id IS NOT NULL),'[]'::json) AS ingredients FROM dishes d LEFT JOIN dish_ingredients di ON di.dish_id=d.id LEFT JOIN foods f ON f.id=di.food_id GROUP BY d.id ORDER BY d.created_at DESC"
+  );
+  res.json({dishes:result.rows});
+}));
+
+app.patch('/api/admin/foods/:id/active', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف المكوّن غير صالح.'}); return; }
+  const active = req.body?.active;
+  if (typeof active !== 'boolean') { res.status(400).json({error:'قيمة التفعيل غير صالحة.'}); return; }
+  const result = await pool.query(
+    "UPDATE foods SET active=$1,updated_at=now() WHERE id=$2 AND ($1=false OR (nutrition_verified=true AND nutrition_basis<>'unspecified' AND length(trim(coalesce(nutrition_source,'')))>0)) RETURNING id,active",
+    [active,req.params.id]
+  );
+  if (!result.rowCount) { res.status(409).json({error:'لا يمكن تفعيل عنصر غير موجود أو غير موثق غذائياً.'}); return; }
+  res.json({food:result.rows[0]});
+}));
+
+app.post('/api/admin/dishes', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  const name = cleanText(req.body?.name,2,160);
+  const ingredients = req.body?.ingredients;
+  if (!name || !Array.isArray(ingredients) || ingredients.length < 1 || ingredients.length > 30) {
+    res.status(400).json({error:'اسم الطبق ومكوّناته مطلوبة.'}); return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const dish = await client.query('INSERT INTO dishes (name_ar,description,active) VALUES ($1,$2,false) RETURNING id,name_ar,active',[name,cleanText(req.body?.description ?? '',0,500)]);
+    for (const item of ingredients) {
+      const grams = bounded(item?.grams,1,2000);
+      if (!grams || !cleanText(item?.foodId,1,80)) throw new Error('INVALID_DISH_INGREDIENT');
+      const food = await client.query(
+        "SELECT id FROM foods WHERE id=$1 AND active=true AND nutrition_verified=true AND nutrition_basis<>'unspecified' AND length(trim(coalesce(nutrition_source,'')))>0",
+        [item.foodId]
+      );
+      if (!food.rowCount) throw new Error('DISH_FOOD_UNVERIFIED');
+      await client.query('INSERT INTO dish_ingredients (dish_id,food_id,grams) VALUES ($1,$2,$3)',[dish.rows[0].id,item.foodId,grams]);
+    }
+    await audit(client,(req as AuthRequest).auth!.id,'dish.created','dish',dish.rows[0].id);
+    await client.query('COMMIT');
+    res.status(201).json({dish:dish.rows[0],note:'الطبق غير نشط حتى مراجعته وتفعيله.'});
+  } catch (error:any) {
+    await client.query('ROLLBACK');
+    if (error?.message === 'INVALID_DISH_INGREDIENT') { res.status(400).json({error:'أحد مكونات الطبق أو أوزانه غير صالح.'}); return; }
+    if (error?.message === 'DISH_FOOD_UNVERIFIED') { res.status(409).json({error:'لا يمكن بناء وصفة من مكوّن غير موثق أو غير نشط.'}); return; }
+    throw error;
+  } finally { client.release(); }
+}));
+
+app.patch('/api/admin/dishes/:id/active', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف الطبق غير صالح.'}); return; }
+  const active = req.body?.active;
+  if (typeof active !== 'boolean') { res.status(400).json({error:'قيمة التفعيل غير صالحة.'}); return; }
+  if (active) {
+    const check = await pool.query(
+      "SELECT count(*)::int AS total,count(*) FILTER (WHERE f.active=true AND f.nutrition_verified=true AND f.nutrition_basis<>'unspecified' AND length(trim(coalesce(f.nutrition_source,'')))>0)::int AS valid FROM dish_ingredients di JOIN foods f ON f.id=di.food_id WHERE di.dish_id=$1",
+      [req.params.id]
+    );
+    if (!check.rows[0] || Number(check.rows[0].total) < 1 || Number(check.rows[0].total) !== Number(check.rows[0].valid)) {
+      res.status(409).json({error:'لا يمكن تفعيل وصفة بلا مكونات موثقة ونشطة.'}); return;
+    }
+  }
+  const result = await pool.query('UPDATE dishes SET active=$1 WHERE id=$2 RETURNING id,active',[active,req.params.id]);
+  if (!result.rowCount) { res.status(404).json({error:'الطبق غير موجود.'}); return; }
+  res.json({dish:result.rows[0]});
+}));
+
+app.get('/api/admin/zones', authRequired, requireRole('admin'), asyncRoute(async (_req,res) => {
+  const result = await pool.query('SELECT * FROM delivery_zones ORDER BY created_at DESC');
+  res.json({zones:result.rows});
+}));
+
+app.get('/api/admin/orders', authRequired, requireRole('admin'), asyncRoute(async (_req,res) => {
+  const result = await pool.query(
+    "SELECT o.id,o.order_number,o.delivery_date,o.delivery_zone_title,o.meal_count,o.total_dzd,o.order_status,o.production_stage,o.payment_status,o.customer_note,o.delivery_user_id,u.name AS customer_name,u.email AS customer_email,d.name AS delivery_user_name FROM customer_orders o JOIN app_users u ON u.id=o.customer_id LEFT JOIN app_users d ON d.id=o.delivery_user_id ORDER BY o.created_at DESC LIMIT 250"
+  );
+  const ids = result.rows.map((order) => order.id);
+  const lines = ids.length ? await pool.query(
+    "SELECT oi.*,COALESCE(json_agg(json_build_object('name',ii.food_name_snapshot,'grams',ii.grams,'basis',ii.nutrition_basis_snapshot,'source',ii.nutrition_source_snapshot)) FILTER (WHERE ii.id IS NOT NULL),'[]'::json) AS ingredients FROM order_items oi LEFT JOIN order_item_ingredients ii ON ii.order_item_id=oi.id WHERE oi.order_id=ANY($1::uuid[]) GROUP BY oi.id ORDER BY oi.slot,oi.id",
+    [ids]
+  ) : { rows:[] as any[] };
+  const grouped = new Map<string,any[]>();
+  for (const line of lines.rows) grouped.set(line.order_id,[...(grouped.get(line.order_id) ?? []),line]);
+  res.json({orders:result.rows.map((order) => ({...order,items:grouped.get(order.id) ?? []}))});
+}));
+
+app.post('/api/admin/zones', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  const title = cleanText(req.body?.title,2,120);
+  const areas = cleanText(req.body?.areas,2,500);
+  const hours = cleanText(req.body?.serviceHours,2,120);
+  const fee = bounded(req.body?.feeDzd,0,100000);
+  if (!title || !areas || !hours || fee === null) { res.status(400).json({error:'اسم المنطقة والأحياء وساعات الخدمة والرسوم مطلوبة.'}); return; }
+  const result = await pool.query(
+    'INSERT INTO delivery_zones (title,areas,service_hours,fee_dzd,active) VALUES ($1,$2,$3,$4,false) RETURNING *',
+    [title,areas,hours,fee]
+  );
+  res.status(201).json({zone:result.rows[0],note:'أضيفت المنطقة متوقفة. فعّلها بعد اعتماد التغطية.'});
+}));
+
+app.patch('/api/admin/zones/:id', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف المنطقة غير صالح.'}); return; }
+  const b = req.body ?? {};
+  const current = await pool.query('SELECT * FROM delivery_zones WHERE id=$1',[req.params.id]);
+  if (!current.rowCount) { res.status(404).json({error:'المنطقة غير موجودة.'}); return; }
+  const old = current.rows[0];
+  const title = b.title === undefined ? old.title : cleanText(b.title,2,120);
+  const areas = b.areas === undefined ? old.areas : cleanText(b.areas,2,500);
+  const hours = b.serviceHours === undefined ? old.service_hours : cleanText(b.serviceHours,2,120);
+  const fee = b.feeDzd === undefined ? Number(old.fee_dzd) : bounded(b.feeDzd,0,100000);
+  const active = b.active === undefined ? old.active : b.active;
+  if (!title || !areas || !hours || fee === null || typeof active !== 'boolean') {
+    res.status(400).json({error:'بيانات المنطقة غير صالحة.'}); return;
+  }
+  if (active && (areas.includes('غير معتمد') || hours.includes('تجريبي') || hours.includes('يُحدد'))) {
+    res.status(409).json({error:'لا يمكن تفعيل نطاق تغطية تجريبي أو غير معتمد.'}); return;
+  }
+  const result = await pool.query(
+    'UPDATE delivery_zones SET title=$1,areas=$2,service_hours=$3,fee_dzd=$4,active=$5 WHERE id=$6 RETURNING *',
+    [title,areas,hours,fee,active,req.params.id]
+  );
+  res.json({zone:result.rows[0]});
+}));
+
+app.post('/api/admin/orders/:id/confirm', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف الطلب غير صالح.'}); return; }
+  const auth = (req as AuthRequest).auth!;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const config = await client.query('SELECT daily_capacity_boxes FROM pricing_config WHERE id=1 FOR UPDATE');
+    const orderResult = await client.query("SELECT id,delivery_date,delivery_zone_id,meal_count FROM customer_orders WHERE id=$1 AND order_status='waitlisted' FOR UPDATE",[req.params.id]);
+    if (!orderResult.rowCount) {
+      await client.query('ROLLBACK'); res.status(404).json({error:'طلب الانتظار غير موجود.'}); return;
+    }
+    const order = orderResult.rows[0];
+    const zone = await client.query('SELECT id FROM delivery_zones WHERE id=$1 AND active=true',[order.delivery_zone_id]);
+    if (!zone.rowCount) {
+      await client.query('ROLLBACK'); res.status(409).json({error:'منطقة الطلب لم تعد نشطة؛ راجعها قبل التأكيد.'}); return;
+    }
+    const capacity = await client.query("SELECT COALESCE(SUM(meal_count),0)::int AS used FROM customer_orders WHERE delivery_date=$1 AND order_status='confirmed'",[order.delivery_date]);
+    const cap = Number(config.rows[0]?.daily_capacity_boxes ?? 0);
+    if (cap < 1 || Number(capacity.rows[0].used) + Number(order.meal_count) > cap) {
+      await client.query('ROLLBACK'); res.status(409).json({error:'لا توجد سعة كافية لتأكيد هذا الطلب بعد.'}); return;
+    }
+    await client.query("UPDATE customer_orders SET order_status='confirmed',production_stage='queued',updated_at=now() WHERE id=$1",[order.id]);
+    await audit(client,auth.id,'order.confirmed_from_waitlist','customer_order',order.id);
+    await client.query('COMMIT');
+    res.json({confirmed:true});
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.post('/api/admin/orders/:id/cancel', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف الطلب غير صالح.'}); return; }
+  const auth = (req as AuthRequest).auth!;
+  const reason = cleanText(req.body?.reason ?? '',0,300) ?? '';
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      "SELECT id,order_status,production_stage FROM customer_orders WHERE id=$1 FOR UPDATE",
+      [req.params.id]
+    );
+    if (!found.rowCount) { await client.query('ROLLBACK'); res.status(404).json({error:'الطلب غير موجود.'}); return; }
+    if (found.rows[0].order_status === 'cancelled') {
+      await client.query('ROLLBACK'); res.status(409).json({error:'الطلب ملغى بالفعل.'}); return;
+    }
+    await client.query(
+      "UPDATE customer_orders SET order_status='cancelled',production_stage=NULL,updated_at=now() WHERE id=$1",
+      [req.params.id]
+    );
+    await audit(client,auth.id,'order.cancelled_by_admin','customer_order',req.params.id,{reason});
+    await client.query('COMMIT');
+    res.json({cancelled:true,id:req.params.id});
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.post('/api/admin/orders/:id/assign-delivery', authRequired, requireRole('admin'), asyncRoute(async (req,res) => {
+  if (!isUuid(req.params.id)) { res.status(400).json({error:'معرّف الطلب غير صالح.'}); return; }
+  const auth = (req as AuthRequest).auth!;
+  const deliveryUserId = cleanText(req.body?.deliveryUserId,1,80);
+  if (!deliveryUserId || !isUuid(deliveryUserId)) { res.status(400).json({error:'معرّف حساب التوصيل مطلوب وصالح.'}); return; }
+  const driver = await pool.query("SELECT id FROM app_users WHERE id=$1 AND role='delivery'",[deliveryUserId]);
+  if (!driver.rowCount) { res.status(404).json({error:'حساب التوصيل غير موجود.'}); return; }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      "UPDATE customer_orders SET delivery_user_id=$1,updated_at=now() WHERE id=$2 AND order_status='confirmed' RETURNING id,delivery_user_id",
+      [deliveryUserId,req.params.id]
+    );
+    if (!result.rowCount) { await client.query('ROLLBACK'); res.status(404).json({error:'الطلب غير موجود أو غير مؤكد.'}); return; }
+    await audit(client,auth.id,'order.delivery_assigned','customer_order',req.params.id,{deliveryUserId});
+    await client.query('COMMIT');
+    res.json({assignment:result.rows[0]});
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.get('/api/delivery/orders', authRequired, requireRole('delivery'), asyncRoute(async (req,res) => {
+  const auth = (req as AuthRequest).auth!;
+  const result = await pool.query(
+    "SELECT o.id,o.order_number,o.delivery_date,o.delivery_zone_title,o.production_stage,o.customer_note,o.total_dzd,o.payment_method,o.payment_status,u.name AS customer_name,(SELECT COALESCE(json_agg(json_build_object('label',oi.label,'grams',oi.grams,'slot_name',oi.slot_name)),'[]'::json) FROM order_items oi WHERE oi.order_id=o.id) AS items FROM customer_orders o JOIN app_users u ON u.id=o.customer_id WHERE o.delivery_user_id=$1 AND o.order_status='confirmed' ORDER BY o.delivery_date,o.created_at",
+    [auth.id]
+  );
+  res.json({orders:result.rows});
+}));
+
+app.use('/api',(_req,res) => res.status(404).json({error:'مسار API غير موجود.'}));
+app.use((error:any,_req:Request,res:Response,_next:NextFunction) => {
+  if (Number(error?.status) >= 500 || !error?.status) console.error('[api-error]',error);
+  res.status(Number(error?.status) || 500).json({error:'حدث خطأ داخلي. حاول لاحقاً.'});
+});
+const here = path.dirname(fileURLToPath(import.meta.url));
+app.use(express.static(path.resolve(here,'../dist')));
+app.get('*',(_req,res) => res.sendFile(path.resolve(here,'../dist/index.html')));
+const server = app.listen(PORT,() => console.log('NutriFit API listening on port ' + PORT));
+async function shutdown() { server.close(); await pool.end(); process.exit(0); }
+process.on('SIGTERM',() => { void shutdown(); });
+process.on('SIGINT',() => { void shutdown(); });
+
+
+==========================================================================================
+FILE: server/migrate.ts
+==========================================================================================
+import 'dotenv/config';
+import { Pool } from 'pg';
+import { readFile, readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) throw new Error('DATABASE_URL is required');
+
+const pool = new Pool({
+  connectionString: databaseUrl,
+  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: true } : undefined,
+});
+const here = path.dirname(fileURLToPath(import.meta.url));
+const migrationPath = path.resolve(here,'../db/migrations/001_initial_schema.sql');
+
+async function migrate() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+    const directory = path.dirname(migrationPath);
+    const files = (await readdir(directory)).filter((name) => /^\d+_[a-z0-9_-]+\.sql$/i.test(name)).sort();
+    for (const file of files) {
+      const version = file.replace(/\.sql$/i,'');
+      const existing = await client.query('SELECT version FROM schema_migrations WHERE version=$1',[version]);
+      if (existing.rowCount) {
+        console.log('Migration ' + version + ' already applied.');
+        continue;
+      }
+      const sql = await readFile(path.join(directory,file),'utf8');
+      await client.query(sql);
+      await client.query('INSERT INTO schema_migrations (version) VALUES ($1)',[version]);
+      console.log('Migration ' + version + ' applied successfully.');
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+    await pool.end();
+  }
+}
+migrate().catch((error) => {
+  console.error('Database migration failed:',error);
+  process.exitCode = 1;
+});
+
+
+==========================================================================================
+FILE: server/promote-admin.ts
+==========================================================================================
+import 'dotenv/config';
+import { Pool } from 'pg';
+
+const databaseUrl = process.env.DATABASE_URL;
+const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+if (!databaseUrl || !email) {
+  throw new Error('Set DATABASE_URL and BOOTSTRAP_ADMIN_EMAIL for this one-time administrative operation.');
+}
+const pool = new Pool({
+  connectionString: databaseUrl,
+  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: true } : undefined,
+});
+try {
+  const result = await pool.query(
+    "UPDATE app_users SET role='admin' WHERE lower(email)=$1 AND role='customer' RETURNING id,email,role",
+    [email]
+  );
+  if (!result.rowCount) {
+    const existing = await pool.query('SELECT id,email,role FROM app_users WHERE lower(email)=$1',[email]);
+    if (!existing.rowCount) throw new Error('No registered user found for BOOTSTRAP_ADMIN_EMAIL.');
+    if (existing.rows[0].role !== 'admin') throw new Error('Account exists but is not a customer; review its role manually.');
+    console.log('The account is already an administrator:',existing.rows[0].email);
+  } else {
+    console.log('Administrator role granted:',result.rows[0].email);
+  }
+} finally {
+  await pool.end();
+}
+
+
+==========================================================================================
+FILE: src/App.tsx
+==========================================================================================
+import React, { useEffect, useState } from 'react';
+import { createInitialState, STATE_VERSION } from './data/seed';
+import { AppState, AppTab } from './types';
+import { GlobalStatusBar } from './components/GlobalStatusBar';
+import { WelcomeView } from './components/WelcomeView';
+import { CalculatorWizard } from './components/CalculatorWizard';
+import { TodayView } from './components/TodayView';
+import { PremiumMealBuilder } from './components/PremiumMealBuilder';
+import { CartView } from './components/CartView';
+import { JournalView } from './components/JournalView';
+import { AccountView } from './components/AccountView';
+import { AdminView } from './components/AdminView';
+import { AuthView } from './components/AuthView';
+import { OperationsView } from './components/OperationsView';
+import { API_ENABLED, apiRequest, ApiSession, ApiUser } from './services/api';
+import {
+  Home,
+  ShoppingBag,
+  Sliders,
+  TrendingUp,
+  User,
+  UtensilsCrossed,
+} from 'lucide-react';
+
+const STORAGE_KEY = 'nutrifit_dz_state_v2';
+
+interface ToastItem {
+  id: number;
+  msg: string;
+  undo?: () => void;
+}
+
+function loadState(): AppState {
+  const defaults = createInitialState();
+  if (API_ENABLED) return defaults;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<AppState>;
+      if (parsed && parsed.ver === STATE_VERSION && Array.isArray(parsed.foods)) {
+        return {
+          ...defaults,
+          ...parsed,
+          // The local prototype has no server-side identity provider. Never
+          // restore an operator session or expose the admin route to customers.
+          tab:
+            parsed.tab === 'home' ||
+            parsed.tab === 'menu' ||
+            parsed.tab === 'cart' ||
+            parsed.tab === 'jr' ||
+            parsed.tab === 'me'
+              ? parsed.tab
+              : defaults.tab,
+          adminMode: false,
+          zones:
+            Array.isArray(parsed.zones) && parsed.zones.length > 0
+              ? parsed.zones
+              : defaults.zones,
+          pricingConfig: parsed.pricingConfig
+            ? { ...defaults.pricingConfig, ...parsed.pricingConfig }
+            : defaults.pricingConfig,
+          mealNames:
+            Array.isArray(parsed.mealNames) && parsed.mealNames.length > 0
+              ? parsed.mealNames
+              : defaults.mealNames,
+          activeSlot: typeof parsed.activeSlot === 'number' ? parsed.activeSlot : 0,
+        };
+      }
+    }
+  } catch {
+    // ignore corrupted local storage
+  }
+  return defaults;
+}
+
+export default function App() {
+  const [state, setState] = useState<AppState>(loadState);
+  const [showWelcome, setShowWelcome] = useState(() => state.ob === 0);
+  const [session, setSession] = useState<ApiSession | null>(null);
+  const [sessionReady, setSessionReady] = useState(!API_ENABLED);
+
+  const hydrateRemoteWorkspace = async (token: string, user: ApiUser) => {
+    const [profileResponse, foodsResponse, dishesResponse, zonesResponse, ordersResponse] = await Promise.all([
+      apiRequest<{ profile: any }>('/api/profile', token),
+      apiRequest<{ foods: any[] }>('/api/foods', token),
+      apiRequest<{ dishes: any[] }>('/api/dishes', token),
+      apiRequest<{ zones: any[] }>('/api/zones', token),
+      apiRequest<{ orders: any[] }>('/api/orders', token),
+    ]);
+    const profile = profileResponse.profile;
+    const foods = foodsResponse.foods.map((food) => ({
+      id: food.id,
+      emoji: food.category === 'protein' ? '🍗' : food.category === 'carb' ? '🍚' : food.category === 'fat' ? '🫒' : food.category === 'veg' ? '🥦' : '🥤',
+      name: food.name_ar,
+      nameFr: food.name_fr || undefined,
+      nameEn: food.name_en || undefined,
+      cat: food.category,
+      unitLabel: food.category === 'juice' ? '100مل' : undefined,
+      per100: {
+        kcal: Number(food.kcal_per_100), p: Number(food.protein_per_100),
+        c: Number(food.carbs_per_100), f: Number(food.fat_per_100), fiber: Number(food.fiber_per_100),
+      },
+      price: Number(food.price_dzd_per_100),
+      al: food.allergens ?? [],
+      available: true,
+      nutritionDataStatus: 'verified' as const,
+      nutritionBasis: food.nutrition_basis,
+      nutritionSource: food.nutrition_source,
+      sourceRecordId: food.source_record_id || undefined,
+      ediblePortionPct: food.edible_portion_pct !== null && food.edible_portion_pct !== undefined ? Number(food.edible_portion_pct) : undefined,
+      cookingYield: food.cooking_yield !== null && food.cooking_yield !== undefined ? Number(food.cooking_yield) : undefined,
+    }));
+    const dishes = dishesResponse.dishes.map((dish) => ({
+      id: dish.id,
+      emoji: '🍽️',
+      name: dish.name_ar,
+      ing: (dish.ingredients ?? []).map((ingredient: any) => [ingredient.foodId, Number(ingredient.grams)] as [string, number]),
+      available: true,
+    }));
+    const zones = zonesResponse.zones.map((zone) => ({
+      id: zone.id, title: zone.title, areas: zone.areas, hours: zone.service_hours,
+      fee: Number(zone.fee_dzd), active: true,
+    }));
+    const orders = ordersResponse.orders.map((order) => ({
+      id: order.id,
+      createdAt: order.created_at,
+      date: String(order.delivery_date).slice(0,10),
+      n: Number(order.meal_count),
+      zoneTitle: order.delivery_zone_title,
+      zoneFee: Number(order.delivery_fee_dzd),
+      note: order.customer_note ?? '',
+      ingCost: Number(order.ingredient_cost_dzd),
+      handling: Number(order.handling_fee_dzd),
+      service: Number(order.service_fee_dzd),
+      total: Number(order.total_dzd),
+      kcal: Number(order.kcal_total),
+      p: Number(order.protein_total),
+      c: Number(order.carbs_total),
+      f: Number(order.fat_total),
+      status: order.order_status === 'confirmed' ? 'C' as const : order.order_status === 'waitlisted' ? 'W' as const : 'X' as const,
+      productionStage: order.production_stage ?? undefined,
+      items: (order.items ?? []).map((item: any) => ({
+        label: item.label,
+        grams: Number(item.grams),
+        kcal: Number(item.kcal),
+        p: Number(item.protein),
+        slot: Number(item.slot),
+        slotName: item.slot_name,
+        rawIngredients: Array.isArray(item.ingredients)
+          ? item.ingredients.map((ing: any) => [String(ing.name ?? ''), Number(ing.grams ?? 0)] as [string, number])
+          : [],
+      })),
+    }));
+    const hasProfile = Boolean(profile?.age);
+    setState((prev) => ({
+      ...prev,
+      name: profile?.name || user.name,
+      sex: profile?.sex || prev.sex,
+      age: Number(profile?.age) || prev.age,
+      h: Number(profile?.height_cm) || prev.h,
+      w: Number(profile?.weight_kg) || prev.w,
+      targetWeight: Number(profile?.target_weight_kg) || prev.targetWeight,
+      lbm: Number(profile?.lbm_kg) || 0,
+      rel: Number(profile?.lbm_reliability_pct) || 0,
+      lbmMethod: profile?.lbm_method || 'none',
+      band: profile?.activity_band || prev.band,
+      pal: Number(profile?.pal) || prev.pal,
+      goal: profile?.goal || prev.goal,
+      pct: Number(profile?.goal_adjustment_pct) || 0,
+      al: profile?.allergens ?? [],
+      fl: profile?.health_flags ?? { preg:false,kid:false,dia:false,ed:false },
+      foods,
+      dishes,
+      zones,
+      zoneId: zones[0]?.id ?? '',
+      meals: [],
+      ord: orders,
+      jr: [],
+      photos: [],
+      ob: hasProfile ? 6 : 0,
+      tab: 'home',
+      adminMode: false,
+    }));
+    setShowWelcome(!hasProfile);
+  };
+
+  const handleAuthenticated = async (nextSession: ApiSession) => {
+    localStorage.setItem('nf_auth_token', nextSession.token);
+    setSessionReady(false);
+    setSession(nextSession);
+    try {
+      if (nextSession.user.role === 'customer') {
+        await hydrateRemoteWorkspace(nextSession.token, nextSession.user);
+      }
+      setSessionReady(true);
+    } catch (error) {
+      localStorage.removeItem('nf_auth_token');
+      setSession(null);
+      setSessionReady(true);
+      throw error;
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('nf_auth_token');
+    setSession(null);
+    setState(createInitialState());
+    setShowWelcome(true);
+  };
+
+  useEffect(() => {
+    if (!API_ENABLED) return;
+    let cancelled = false;
+    const token = localStorage.getItem('nf_auth_token');
+    if (!token) {
+      setSessionReady(true);
+      return;
+    }
+    apiRequest<{ user: ApiUser }>('/api/auth/me', token)
+      .then(async ({ user }) => {
+        if (cancelled) return;
+        const restored = { token, user };
+        setSession(restored);
+        if (user.role === 'customer') {
+          await hydrateRemoteWorkspace(token, user);
+        }
+      })
+      .catch(() => {
+        localStorage.removeItem('nf_auth_token');
+        if (!cancelled) setSession(null);
+      })
+      .finally(() => {
+        if (!cancelled) setSessionReady(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [pickerRequest, setPickerRequest] = useState<{ slot: number; seq: number } | null>(null);
+  const [cartPulseSeq, setCartPulseSeq] = useState(0);
+  const [cartAnimating, setCartAnimating] = useState(false);
+
+  const triggerCartPulse = () => {
+    setCartPulseSeq((s) => s + 1);
+  };
+
+  useEffect(() => {
+    if (cartPulseSeq === 0) return;
+    setCartAnimating(true);
+    const id = window.setTimeout(() => setCartAnimating(false), 440);
+    return () => window.clearTimeout(id);
+  }, [cartPulseSeq]);
+
+  useEffect(() => {
+    if (API_ENABLED) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [state]);
+
+  const showToast = (msg: string, undo?: () => void) => {
+    const id = Date.now() + Math.random();
+    setToasts((prev) => [...prev, { id, msg, undo }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, undo ? 5000 : 2500);
+  };
+
+  useEffect(() => {
+    if (!API_ENABLED || !session || session.user.role !== 'customer' || state.ob < 6) return;
+    const timeout = window.setTimeout(() => {
+      void apiRequest('/api/profile', session.token, {
+        method: 'PUT',
+        body: JSON.stringify({
+          sex: state.sex, age: state.age, heightCm: state.h, weightKg: state.w,
+          targetWeightKg: state.targetWeight, lbmKg: state.lbm,
+          lbmReliabilityPct: state.rel, lbmMethod: state.lbmMethod ?? 'none',
+          activityBand: state.band, pal: state.pal, goal: state.goal,
+          goalAdjustmentPct: state.pct, allergens: state.al, healthFlags: state.fl,
+        }),
+      }).catch((error) => showToast(error instanceof Error ? error.message : 'تعذر مزامنة الملف الصحي.'));
+    }, 700);
+    return () => window.clearTimeout(timeout);
+  }, [API_ENABLED, session?.token, session?.user.role, state.ob, state.sex, state.age, state.h, state.w,
+      state.targetWeight, state.lbm, state.rel, state.lbmMethod, state.band, state.pal, state.goal,
+      state.pct, state.al.join(','), state.fl.preg, state.fl.kid, state.fl.dia, state.fl.ed]);
+
+  const navigate = (tab: AppTab) => {
+    setPickerRequest(null);
+    setState((prev) => ({ ...prev, tab }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const enterOwnerWorkspace = () => {
+    setPickerRequest(null);
+    setState((prev) => ({ ...prev, adminMode: true, tab: 'admin' }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const exitOwnerWorkspace = () => {
+    setState((prev) => ({ ...prev, tab: 'home' }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const selectMealSlotAndGoMenu = (slotIdx: number) => {
+    const safeIdx = Math.max(0, Math.min(state.n - 1, slotIdx));
+    setState((prev) => ({
+      ...prev,
+      activeSlot: safeIdx,
+      tab: 'menu',
+    }));
+    setPickerRequest((prev) => ({ slot: safeIdx, seq: (prev?.seq ?? 0) + 1 }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const resetAll = () => {
+    const fresh = createInitialState();
+    setState(fresh);
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    showToast('تم تصفير جميع البيانات');
+  };
+
+  const navItems: { id: AppTab; label: string; icon: React.ReactNode; badge?: number }[] = [
+    { id: 'home', label: 'اليوم', icon: <Home className="w-5 h-5" /> },
+    { id: 'menu', label: 'الوجبات', icon: <UtensilsCrossed className="w-5 h-5" /> },
+    {
+      id: 'cart',
+      label: 'السلة',
+      icon: <ShoppingBag className="w-5 h-5" />,
+      badge: state.meals.length > 0 ? state.meals.length : undefined,
+    },
+    { id: 'jr', label: 'تطوري', icon: <TrendingUp className="w-5 h-5" /> },
+    { id: 'me', label: 'حسابي', icon: <User className="w-5 h-5" /> },
+  ];
+
+  if (API_ENABLED && !sessionReady) {
+    return <div className="min-h-screen bg-[#09090b] text-[#e6d1a3] flex items-center justify-center text-sm">جارٍ التحقق من الجلسة وتحميل ملفك…</div>;
+  }
+  if (API_ENABLED && !session) {
+    return <AuthView onAuthenticated={handleAuthenticated} />;
+  }
+  if (API_ENABLED && session && session.user.role !== 'customer') {
+    return <OperationsView session={session} onLogout={logout} />;
+  }
+
+  // Onboarding / Scientific Calculator Wizard
+  if (state.ob < 6 && state.tab !== 'admin') {
+    if (showWelcome) {
+      return <WelcomeView onStart={() => setShowWelcome(false)} />;
+    }
+    return (
+      <div className="min-h-screen">
+        <CalculatorWizard
+          state={state}
+          onUpdate={setState}
+          onFinish={() => {
+            if (API_ENABLED && session) {
+              const payload = {
+                sex: state.sex, age: state.age, heightCm: state.h, weightKg: state.w,
+                targetWeightKg: state.targetWeight, lbmKg: state.lbm,
+                lbmReliabilityPct: state.rel, lbmMethod: state.lbmMethod ?? 'none',
+                activityBand: state.band, pal: state.pal, goal: state.goal,
+                goalAdjustmentPct: state.pct, allergens: state.al, healthFlags: state.fl,
+              };
+              void apiRequest('/api/profile', session.token, {
+                method: 'PUT', body: JSON.stringify(payload),
+              }).then(() => setState((prev) => ({ ...prev, ob: 6, tab: 'home' })))
+                .catch((error) => showToast(error instanceof Error ? error.message : 'تعذر حفظ الملف على الخادم.'));
+            } else {
+              setState((prev) => ({ ...prev, ob: 6, tab: 'home' }));
+            }
+          }}
+        />
+      </div>
+    );
+  }
+
+  // DEDICATED OWNER WORKSPACE (Completely separate interface from Client App)
+  if (import.meta.env.DEV && state.tab === 'admin') {
+    return (
+      <div className="min-h-screen pb-12">
+        <div className="max-w-5xl mx-auto px-3 sm:px-4 pt-4">
+          <AdminView
+            state={state}
+            onUpdate={setState}
+            onExitOwner={exitOwnerWorkspace}
+            onToast={showToast}
+          />
+        </div>
+
+        {toasts.length > 0 && (
+          <div className="fixed bottom-6 left-4 right-4 max-w-md mx-auto z-50 space-y-2 pointer-events-none">
+            {toasts.map((t) => (
+              <div
+                key={t.id}
+                className="pointer-events-auto bg-[#111114] border border-[#c8a96e]/60 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs font-semibold text-[#f3f1ec] shadow-2xl"
+              >
+                <span>{t.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Customer workspace — editorial dashboard and task-oriented navigation
+  return (
+    <div className="min-h-screen bg-[var(--nf-bg)] pb-24 lg:pb-10">
+      <GlobalStatusBar state={state} />
+      <div className="mx-auto max-w-[1440px] px-4 pt-4 sm:px-6 lg:px-8">
+        <header className="flex items-center justify-between gap-4 border-b border-[var(--nf-border)] pb-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--nf-green)] text-sm font-bold tracking-tight text-white">NF</div>
+            <div><div className="text-sm font-bold tracking-[.08em] text-[var(--nf-ink)]">NUTRIFIT <span className="font-normal text-[var(--nf-sage)]">ATELIER</span></div><div className="mt-0.5 text-[10px] text-[var(--nf-muted)]">تغذية دقيقة · تحضير مخصص</div></div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="hidden rounded-full border border-[var(--nf-border)] bg-[var(--nf-surface)] px-3 py-2 text-[10px] font-semibold text-[var(--nf-muted)] sm:inline-flex">مساحة العميل</span>
+            {API_ENABLED && session && <button type="button" onClick={logout} className="min-h-10 rounded-xl px-3 text-xs font-bold text-[var(--nf-muted)] hover:bg-[var(--nf-surface-2)]">خروج</button>}
+            {import.meta.env.DEV && <button type="button" onClick={enterOwnerWorkspace} className="min-h-10 rounded-xl border border-[var(--nf-border)] bg-[var(--nf-surface)] px-3 text-[11px] font-bold text-[var(--nf-green)]"><Sliders className="ml-1 inline h-3.5 w-3.5"/> الإدارة</button>}
+          </div>
+        </header>
+
+        <div className="grid gap-6 pt-6 lg:grid-cols-[230px_minmax(0,1fr)] lg:gap-8">
+          <aside className="hidden lg:block">
+            <div className="sticky top-6 rounded-[24px] border border-[var(--nf-border)] bg-[var(--nf-surface)] p-3">
+              <div className="px-3 pb-3 pt-2"><div className="text-[10px] font-bold tracking-[.16em] text-[var(--nf-dim)]">YOUR WORKSPACE</div><div className="mt-1 text-sm font-semibold text-[var(--nf-ink)]">القائمة الرئيسية</div></div>
+              <nav aria-label="التنقل الرئيسي" className="space-y-1">
+                {navItems.map((item) => {
+                  const active = state.tab === item.id;
+                  const isCart = item.id === 'cart';
+                  return <button key={item.id} type="button" data-cart-target={isCart ? 'true' : undefined} onClick={() => navigate(item.id)} className={`touch-press flex min-h-12 w-full items-center justify-between rounded-xl px-3 text-xs font-bold transition-colors ${active ? 'bg-[var(--nf-green-soft)] text-[var(--nf-green)]' : 'text-[var(--nf-muted)] hover:bg-[var(--nf-surface-2)]'} ${isCart && cartAnimating ? 'animate-cart-land' : ''}`}>
+                    <span className="flex items-center gap-3">{item.icon}<span>{item.label}</span></span>
+                    {item.badge !== undefined && <span className="min-w-5 rounded-full bg-[var(--nf-green)] px-1.5 py-1 text-center text-[10px] text-white tabular-nums">{item.badge}</span>}
+                  </button>;
+                })}
+              </nav>
+              <div className="mt-4 border-t border-[var(--nf-border)] px-3 pt-4"><div className="text-[10px] leading-5 text-[var(--nf-muted)]">خطتك، مكوناتك، وطلباتك في مساحة واحدة.</div></div>
+            </div>
+          </aside>
+
+          <main className="min-w-0">
+            {state.tab === 'home' && <TodayView state={state} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onReopenCalc={() => setState(prev => ({...prev, ob:1}))}/>}
+            {state.tab === 'menu' && <PremiumMealBuilder state={state} onUpdate={setState} onNavigate={navigate} onToast={showToast} onCartPulse={triggerCartPulse} pickerRequest={pickerRequest}/>}
+            {state.tab === 'cart' && <CartView state={state} onUpdate={setState} onNavigate={navigate} onSelectMealSlot={selectMealSlotAndGoMenu} onToast={showToast} apiEnabled={API_ENABLED} authToken={session?.token}/>}
+            {state.tab === 'jr' && <JournalView state={state} onUpdate={setState} onToast={showToast}/>}
+            {state.tab === 'me' && <AccountView state={state} onReopenCalc={() => setState(prev => ({...prev, ob:1}))} onResetAll={resetAll} onToast={showToast}/>}
+          </main>
+        </div>
+      </div>
+
+      {/* Mobile Fixed Bottom Navigation Bar */}
+      <nav
+        aria-label="التنقل الرئيسي"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--nf-border)] bg-[var(--nf-surface)]/95 px-2 pt-2 pb-[max(0.45rem,env(safe-area-inset-bottom))] shadow-[0_-8px_30px_rgba(32,39,34,.07)] backdrop-blur-xl"
+      >
+        <div className="mx-auto flex max-w-lg items-center justify-around gap-1">
+          {navItems.map((item) => {
+            const active = state.tab === item.id;
+            const isCart = item.id === 'cart';
+            return (
+              <button
+                key={item.id}
+                type="button"
+                data-cart-target={isCart ? 'true' : undefined}
+                onClick={() => navigate(item.id)}
+                className={`touch-press relative flex-1 min-h-[52px] rounded-xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold transition-colors cursor-pointer ${
+                  active ? 'text-[var(--nf-green)]' : 'text-[var(--nf-muted)] hover:text-[var(--nf-ink)]'
+                } ${isCart && cartAnimating ? 'animate-cart-land text-[#e6d1a3]' : ''}`}
+              >
+                {item.icon}
+                <span className="whitespace-nowrap">{item.label}</span>
+                {item.badge !== undefined && (
+                  <span className="absolute top-1 left-1/2 translate-x-2 text-[9px] bg-[var(--nf-green)] text-white font-bold rounded-full px-1.5 leading-tight tabular-nums">
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      {/* Toast Stack */}
+      {toasts.length > 0 && (
+        <div className="fixed bottom-20 lg:bottom-6 left-4 right-4 max-w-md mx-auto z-50 space-y-2 pointer-events-none">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className="pointer-events-auto bg-[#111114] border border-[#c8a96e]/60 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs font-semibold text-[#f3f1ec] shadow-2xl"
+            >
+              <span>{t.msg}</span>
+              {t.undo && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    t.undo?.();
+                    setToasts((prev) => prev.filter((x) => x.id !== t.id));
+                  }}
+                  className="touch-press text-[#c8a96e] font-bold cursor-pointer shrink-0"
+                >
+                  تراجع
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+==========================================================================================
+FILE: src/components/AccountView.tsx
+==========================================================================================
+import React, { useState } from 'react';
+import { GOALS, PICKUP_POINTS, QUALITY_CHARTER } from '../data/seed';
+import { AppState } from '../types';
+import { calcNutrition, round1 } from '../utils/nutrition';
+import { EquationTable } from './EquationTable';
+import { Calculator, Download, MapPin, ShieldCheck, Trash2 } from 'lucide-react';
+
+interface AccountViewProps {
+  state: AppState;
+  onReopenCalc: () => void;
+  onResetAll: () => void;
+  onToast: (msg: string) => void;
+}
+
+export const AccountView: React.FC<AccountViewProps> = ({
+  state,
+  onReopenCalc,
+  onResetAll,
+  onToast,
+}) => {
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [showBulletin, setShowBulletin] = useState(false);
+  const [showCharter, setShowCharter] = useState(false);
+
+  const res = calcNutrition(state);
+
+  const handleExportJson = () => {
+    try {
+      const blob = new Blob([JSON.stringify(state, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `nutrifit-dz-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 500);
+      onToast('تم تصدير ملف البيانات JSON');
+    } catch {
+      onToast('تعذر تصدير البيانات');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <h1 className="text-2xl font-bold text-[#f3f1ec]">الحساب والملف الغذائي</h1>
+
+      <div className="rounded-xl border border-[#c8a96e]/25 bg-[#18181c] px-4 py-3 text-[11px] leading-6 text-[#96938a]">
+        <strong className="text-[#e6d1a3]">خصوصية البيانات:</strong>{' '}
+        يُحفظ هذا الملف حالياً في تخزين المتصفح على هذا الجهاز فقط، بما فيه قياسات الجسم وإجابات بوابة السلامة. لا تستخدم جهازاً مشتركاً، ولا توجد مزامنة سحابية أو حساب محمي في نسخة المعاينة.
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+        {/* Left: Profile + Scientific Calculator Equations */}
+        <div className="lg:col-span-7 space-y-4">
+          <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-base font-bold text-[#f3f1ec]">
+                {state.name || 'مشترك NutriFit DZ'}
+              </div>
+              <div className="text-xs text-[#96938a] mt-1 tabular-nums">
+                {state.sex === 'm' ? 'ذكر' : 'أنثى'} · {state.age} سنة · {state.w} كغ · {state.h} سم ·{' '}
+                <span className="text-[#c8a96e] font-bold">{GOALS[state.goal].label}</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onReopenCalc}
+              className="touch-press px-4 py-2 rounded-xl bg-[#18181c] border border-[#c8a96e]/50 text-xs font-bold text-[#e6d1a3] flex items-center gap-1.5 cursor-pointer hover:bg-[#1c1a15]"
+            >
+              <Calculator className="w-3.5 h-3.5" />
+              الحاسبة العلمية
+            </button>
+          </div>
+
+          {!res.err && <EquationTable state={state} result={res} />}
+        </div>
+
+        {/* Right: Pickup Points, Charter, Market Bulletin & Data */}
+        <div className="lg:col-span-5 space-y-4">
+          {/* Pickup Points */}
+          <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-[#f3f1ec]">
+              <MapPin className="w-4 h-4 text-[#c8a96e]" />
+              <span>نقاط الاستلام والتغطية</span>
+            </div>
+            <div className="space-y-2">
+              {PICKUP_POINTS.map((p) => (
+                <div
+                  key={p.name}
+                  className="bg-[#18181c] border border-[#232329] rounded-xl p-3 flex items-center justify-between gap-2"
+                >
+                  <div>
+                    <div className="text-xs font-bold text-[#f3f1ec]">{p.name}</div>
+                    <div className="text-[11px] text-[#96938a] mt-0.5">
+                      {p.area} · {p.hours}
+                    </div>
+                  </div>
+                  <span
+                    className={`text-[11px] font-bold whitespace-nowrap ${
+                      p.active ? 'text-[#6b9c7e]' : 'text-[#66645e]'
+                    }`}
+                  >
+                    {p.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Quality Charter (10 items) */}
+          <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 space-y-2">
+            <button
+              type="button"
+              onClick={() => setShowCharter((s) => !s)}
+              className="touch-press w-full flex items-center justify-between text-sm font-bold text-[#f3f1ec] cursor-pointer"
+            >
+              <span className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#c8a96e]" />
+                معايير الجودة المستهدفة (10 بنود)
+              </span>
+              <span className="text-xs text-[#c8a96e]">{showCharter ? 'إخفاء' : 'عرض'}</span>
+            </button>
+            {showCharter && (
+              <>
+                <p className="pt-2 border-t border-[#232329] text-[11px] leading-5 text-[#c89a56]">
+                  هذه معايير تشغيل مستهدفة؛ لا يعني ظهورها أن إجراءات المطبخ أو التبريد أو التتبع مطبقة فعلياً في نسخة المعاينة.
+                </p>
+                <ol className="space-y-1.5 text-xs text-[#96938a]">
+                {QUALITY_CHARTER.map((item, idx) => (
+                  <li key={idx} className="flex gap-2">
+                    <span className="font-bold text-[#c8a96e] w-5 shrink-0 tabular-nums">
+                      {idx + 1}.
+                    </span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+                </ol>
+              </>
+            )}
+          </div>
+
+          {/* Weekly Frozen Market Price Bulletin */}
+          <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 space-y-2">
+            <button
+              type="button"
+              onClick={() => setShowBulletin((s) => !s)}
+              className="touch-press w-full flex items-center justify-between text-sm font-bold text-[#f3f1ec] cursor-pointer"
+            >
+              <span>أسعار المكونات التجريبية</span>
+              <span className="text-xs text-[#c8a96e]">{showBulletin ? 'إخفاء' : 'عرض الأسعار'}</span>
+            </button>
+            {showBulletin && (
+              <>
+                <p className="pt-2 border-t border-[#232329] text-[11px] leading-5 text-[#c89a56]">
+                  الأسعار التالية أمثلة مبدئية للواجهة وليست أسعار سوق موثقة أو عروض شراء حالية.
+                </p>
+                <div className="max-h-64 overflow-y-auto divide-y divide-[#232329]">
+                {state.foods.map((f) => (
+                  <div
+                    key={f.id}
+                    className={`py-2 flex items-center justify-between text-xs ${
+                      f.available === false ? 'opacity-45' : ''
+                    }`}
+                  >
+                    <span className="text-[#f3f1ec]">
+                      {f.name}
+                      {f.available === false && (
+                        <span className="text-[#b86157] mr-1.5 text-[10px]">(متوقف)</span>
+                      )}
+                    </span>
+                    <span className="text-[#c8a96e] font-bold tabular-nums">
+                      {round1(f.price)} دج / 100{f.cat === 'juice' ? 'مل' : 'غ'}
+                    </span>
+                  </div>
+                ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Export JSON & Reset Data */}
+          <div className="bg-[#111114] border border-[#232329] rounded-2xl p-4 sm:p-5 space-y-2.5">
+            <div className="text-sm font-bold text-[#f3f1ec]">إدارة البيانات</div>
+            <button
+              type="button"
+              onClick={handleExportJson}
+              className="touch-press w-full py-2.5 rounded-xl bg-[#18181c] border border-[#232329] text-xs font-bold text-[#f3f1ec] flex items-center justify-center gap-2 hover:border-[#c8a96e]/50 cursor-pointer"
+            >
+              <Download className="w-4 h-4 text-[#c8a96e]" />
+              تصدير بياناتي (JSON)
+            </button>
+
+            {!confirmReset ? (
+              <button
+                type="button"
+                onClick={() => setConfirmReset(true)}
+                className="touch-press w-full py-2.5 rounded-xl bg-[#1a1111] border border-[#3d2321] text-xs font-bold text-[#b86157] flex items-center justify-center gap-2 cursor-pointer hover:border-[#b86157]/60"
+              >
+                <Trash2 className="w-4 h-4" />
+                تصفير جميع البيانات
+              </button>
+            ) : (
+              <div className="bg-[#1a1111] border border-[#b86157] rounded-xl p-3 space-y-2">
+                <div className="text-xs font-bold text-[#f3f1ec]">
+                  هل تؤكد تصفير الحساب والطلبات والسجل والعودة للإعدادات الأولية؟
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmReset(false);
+                      onResetAll();
+                    }}
+                    className="touch-press py-2 rounded-lg bg-[#b86157] text-[#141108] text-xs font-bold cursor-pointer"
+                  >
+                    نعم، صفّر البيانات
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmReset(false)}
+                    className="touch-press py-2 rounded-lg bg-[#18181c] border border-[#232329] text-xs font-bold text-[#f3f1ec] cursor-pointer"
+                  >
+                    تراجع
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+==========================================================================================
+FILE: src/components/AdminView.tsx
+==========================================================================================
+import React, { useMemo, useState } from 'react';
+import { ALLERGENS, DEFAULT_PRICING } from '../data/seed';
+import {
+  AllergenKey,
+  AppState,
+  DeliveryZone,
+  DishItem,
+  FoodCategory,
+  FoodItem,
+  Order,
+} from '../types';
+import { compressProgressImage } from '../utils/image';
+import { CATEGORY_LABELS, getDishImage, getFoodImage } from '../utils/media';
+import {
+  calcCartPrice,
+  dishMacros,
+  formatArabicDate,
+  getNextDelivery,
+  getSelectedZone,
+  round0,
+} from '../utils/nutrition';
+import {
+  ArrowRight,
+  Camera,
+  CheckCircle2,
+  Edit2,
+  Plus,
+  Search,
+  Trash2,
+  Truck,
+  X,
+} from 'lucide-react';
+
+interface AdminViewProps {
+  state: AppState;
+  onUpdate: (updater: (prev: AppState) => AppState) => void;
+  onExitOwner: () => void;
+  onToast: (msg: string) => void;
+}
+
+export const AdminView: React.FC<AdminViewProps> = ({
+  state,
+  onUpdate,
+  onExitOwner,
+  onToast,
+}) => {
+  const [subTab, setSubTab] = useState<'foods' | 'dishes' | 'pricing' | 'orders'>('foods');
+  const [foodSearch, setFoodSearch] = useState('');
+  const [foodCat, setFoodCat] = useState<'all' | FoodCategory>('all');
+  const [editingFood, setEditingFood] = useState<FoodItem | null>(null);
+  const [isNewFood, setIsNewFood] = useState(false);
+  const [editingDish, setEditingDish] = useState<DishItem | null>(null);
+  const [isNewDish, setIsNewDish] = useState(false);
+  const [newIngId, setNewIngId] = useState<string>('');
+
+  const pricingCfg = state.pricingConfig || DEFAULT_PRICING;
+  const dlv = getNextDelivery(pricingCfg.cutoffHour);
+  const selectedZone = getSelectedZone(state);
+
+  const filteredFoods = useMemo(
+    () =>
+      state.foods.filter((f) => {
+        if (foodCat !== 'all' && f.cat !== foodCat) return false;
+        if (foodSearch.trim() && !f.name.includes(foodSearch.trim())) return false;
+        return true;
+      }),
+    [state.foods, foodCat, foodSearch]
+  );
+
+  const productionData = useMemo(() => {
+    const confirmed = state.ord.filter((o) => o.date === dlv.date && o.status === 'C');
+    const waitlisted = state.ord.filter((o) => o.date === dlv.date && o.status === 'W');
+    const totalBoxes = confirmed.reduce((s, o) => s + o.n, 0);
+    const totalRevenue = confirmed.reduce((s, o) => s + o.total, 0);
+    const totalIngCost = confirmed.reduce((s, o) => s + o.ingCost, 0);
+
+    const ingTotals = new Map<string, number>();
+    for (const o of confirmed) {
+      for (const item of o.items) {
+        for (const [fid, g] of item.rawIngredients) {
+          ingTotals.set(fid, (ingTotals.get(fid) || 0) + g);
+        }
+      }
+    }
+
+    const shoppingList = Array.from(ingTotals.entries()).map(([fid, grams]) => {
+      const f = state.foods.find((x) => x.id === fid);
+      return {
+        id: fid,
+        name: f ? f.name : fid,
+        image: getFoodImage(f),
+        grams,
+        estCost: f ? (f.price * grams) / 100 : 0,
+      };
+    });
+
+    return {
+      confirmed,
+      waitlisted,
+      totalBoxes,
+      totalRevenue,
+      totalIngCost,
+      shoppingList,
+    };
+  }, [state.ord, state.foods, dlv.date]);
+
+  const saveFood = () => {
+    if (!editingFood || !editingFood.name.trim()) {
+      onToast('أدخل اسم المنتج');
+      return;
+    }
+    if (
+      editingFood.nutritionDataStatus === 'verified' &&
+      (!editingFood.nutritionSource?.trim() || !editingFood.nutritionBasis || editingFood.nutritionBasis === 'unspecified')
+    ) {
+      onToast('لا يمكن اعتماد القيم قبل إدخال مصدر غذائي وحالة الوزن (نيء/مطبوخ/كما يباع)');
+      return;
+    }
+    onUpdate((prev) => ({
+      ...prev,
+      foods: isNewFood
+        ? [...prev.foods, editingFood]
+        : prev.foods.map((f) => (f.id === editingFood.id ? editingFood : f)),
+    }));
+    setEditingFood(null);
+    onToast('تم حفظ المنتج');
+  };
+
+  const deleteFood = (id: string) => {
+    onUpdate((prev) => ({
+      ...prev,
+      foods: prev.foods.filter((f) => f.id !== id),
+      dishes: prev.dishes.filter((d) => d.ing.every(([fid]) => fid !== id)),
+      meals: prev.meals.filter((m) => m.id !== id),
+    }));
+    onToast('تم حذف المنتج');
+  };
+
+  const saveDish = () => {
+    if (!editingDish || !editingDish.name.trim() || editingDish.ing.length === 0) {
+      onToast('أدخل اسم الطبق ومكوّنًا واحدًا على الأقل');
+      return;
+    }
+    onUpdate((prev) => ({
+      ...prev,
+      dishes: isNewDish
+        ? [...prev.dishes, editingDish]
+        : prev.dishes.map((d) => (d.id === editingDish.id ? editingDish : d)),
+    }));
+    setEditingDish(null);
+    onToast('تم حفظ الطبق');
+  };
+
+  const deleteDish = (id: string) => {
+    onUpdate((prev) => ({
+      ...prev,
+      dishes: prev.dishes.filter((d) => d.id !== id),
+      meals: prev.meals.filter((m) => !(m.kind === 'dish' && m.id === id)),
+    }));
+    onToast('تم حذف الطبق');
+  };
+
+  const updateZone = (id: string, patch: Partial<DeliveryZone>) => {
+    if (patch.active === true) {
+      const zone = state.zones.find((item) => item.id === id);
+      const title = patch.title ?? zone?.title ?? '';
+      const areas = patch.areas ?? zone?.areas ?? '';
+      const hours = patch.hours ?? zone?.hours ?? '';
+      if (
+        !title.trim() ||
+        !areas.trim() ||
+        !hours.trim() ||
+        areas.includes('غير معتمد') ||
+        hours.includes('تجريبي') ||
+        hours.includes('يُحدد')
+      ) {
+        onToast('لا يمكن تفعيل المنطقة قبل إدخال اسمها والأحياء وساعات الخدمة الفعلية');
+        return;
+      }
+    }
+    onUpdate((prev) => ({
+      ...prev,
+      zones: prev.zones.map((z) => (z.id === id ? { ...z, ...patch } : z)),
+    }));
+  };
+
+  const addZone = () => {
+    const nextIdx = state.zones.length + 1;
+    const newZone: DeliveryZone = {
+      id: `z_${Date.now().toString().slice(-5)}`,
+      title: `منطقة جديدة ${nextIdx}`,
+      areas: '',
+      hours: '',
+      fee: 0,
+      active: false,
+    };
+    onUpdate((prev) => ({ ...prev, zones: [...prev.zones, newZone] }));
+    onToast('أُضيفت منطقة غير مفعلة؛ أدخل بيانات الخدمة الفعلية قبل تفعيلها');
+  };
+
+  const deleteZone = (id: string) => {
+    if (state.zones.length <= 1) {
+      onToast('يجب الإبقاء على منطقة واحدة على الأقل');
+      return;
+    }
+    onUpdate((prev) => {
+      const remaining = prev.zones.filter((z) => z.id !== id);
+      return {
+        ...prev,
+        zones: remaining,
+        zoneId: prev.zoneId === id ? remaining[0].id : prev.zoneId,
+      };
+    });
+    onToast('تم حذف المنطقة');
+  };
+
+  const handleUploadFoodPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !editingFood) return;
+    try {
+      const dataUrl = await compressProgressImage(file);
+      setEditingFood({ ...editingFood, imageUrl: dataUrl });
+      onToast('تم رفع صورة المنتج');
+    } catch {
+      onToast('تعذر تحميل الصورة');
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleUploadDishPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !editingDish) return;
+    try {
+      const dataUrl = await compressProgressImage(file);
+      setEditingDish({ ...editingDish, imageUrl: dataUrl });
+      onToast('تم رفع صورة الطبق');
+    } catch {
+      onToast('تعذر تحميل الصورة');
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const sampleInvoice = calcCartPrice(1000, 3, selectedZone.fee, pricingCfg);
+
+  return (
+    <div className="space-y-5">
+      {/* Dedicated Owner Studio Header */}
+      <div className="bg-[#111411] border border-[#c9a85c]/45 rounded-2xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-bold text-[#c9a85c]">
+            لوحة المالك الخاصة · NutriFit DZ
+          </div>
+          <h1 className="text-xl sm:text-2xl font-bold text-[#f3f1ec] mt-0.5">
+            إدارة الأسعار، الأطعمة، الأطباق والتوصيل
+          </h1>
+        </div>
+
+        <button
+          type="button"
+          onClick={onExitOwner}
+          className="px-4 py-2.5 rounded-xl bg-[#171a16] border border-[#c9a85c]/50 hover:bg-[#242117] text-xs font-bold text-[#e5cf94] flex items-center gap-1.5 cursor-pointer shrink-0"
+        >
+          <ArrowRight className="w-4 h-4 text-[#c9a85c]" />
+          <span>العودة إلى واجهة العميل</span>
+        </button>
+      </div>
+
+      {/* Owner Section Tabs */}
+      <div className="flex gap-1.5 p-1 bg-[#111411] border border-[#252823] rounded-xl overflow-x-auto no-scrollbar">
+        {(
+          [
+            ['foods', `الأطعمة والأسعار (${state.foods.length})`],
+            ['dishes', `أطباق الشيف (${state.dishes.length})`],
+            ['pricing', 'التوصيل والرسوم'],
+            ['orders', `الطلبات والإنتاج (${state.ord.length})`],
+          ] as const
+        ).map(([k, lbl]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setSubTab(k)}
+            className={`px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer ${
+              subTab === k
+                ? 'bg-[#242117] text-[#e5cf94] border border-[#c9a85c]/40'
+                : 'text-[#9b988d] hover:text-[#f3f1ec]'
+            }`}
+          >
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {/* TAB 1: PRODUCTS, PRICES & AVAILABILITY */}
+      {subTab === 'foods' && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+              {(
+                [
+                  ['all', 'الكل'],
+                  ['protein', 'بروتين'],
+                  ['carb', 'كارب'],
+                  ['fat', 'دهون'],
+                  ['veg', 'خضر'],
+                  ['juice', 'عصائر'],
+                ] as const
+              ).map(([c, lbl]) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setFoodCat(c)}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold whitespace-nowrap cursor-pointer ${
+                    foodCat === c
+                      ? 'bg-[#242117] border-[#c9a85c] text-[#e5cf94]'
+                      : 'bg-[#111411] border-[#252823] text-[#9b988d]'
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <div className="relative flex-1 sm:w-48">
+                <Search className="w-3.5 h-3.5 text-[#6d6b62] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={foodSearch}
+                  onChange={(e) => setFoodSearch(e.target.value)}
+                  placeholder="بحث عن طعام..."
+                  className="w-full bg-[#111411] border border-[#252823] rounded-xl pr-8 pl-3 py-2 text-xs text-[#f3f1ec]"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsNewFood(true);
+                  setEditingFood({
+                    id: `f_${Date.now()}`,
+                    emoji: '',
+                    name: '',
+                    cat: 'protein',
+                    per100: { kcal: 150, p: 20, c: 5, f: 5, fiber: 0 },
+                    price: 50,
+                    al: [],
+                    available: true,
+                    nutritionDataStatus: 'unverified',
+                    nutritionBasis: 'unspecified',
+                    nutritionSource: 'TODO_VERIFY',
+                  });
+                }}
+                className="px-4 py-2 rounded-xl font-bold text-xs text-[#141108] bg-gradient-to-l from-[#e5cf94] to-[#c9a85c] flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <Plus className="w-4 h-4" />
+                إضافة طعام جديد
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-[#111411] border border-[#252823] rounded-2xl divide-y divide-[#222520]">
+            {filteredFoods.map((f) => {
+              const isAvailable = f.available !== false;
+              const unit = f.cat === 'juice' ? '100مل' : '100غ';
+              return (
+                <div
+                  key={f.id}
+                  className={`p-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 text-xs ${
+                    !isAvailable ? 'opacity-55' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3 flex-1 min-w-[180px]">
+                    <img
+                      src={getFoodImage(f)}
+                      alt={f.name}
+                      referrerPolicy="no-referrer"
+                      className="w-11 h-11 rounded-xl object-cover border border-[#252823] shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-bold text-[#f3f1ec] truncate">{f.name}</div>
+                      <div className="text-[11px] text-[#9b988d] tabular-nums mt-0.5">
+                        {CATEGORY_LABELS[f.cat]} · {f.per100.kcal} kcal ·{' '}
+                        <span className="text-[#d4a24c]">P{f.per100.p}</span>{' '}
+                        <span className="text-[#5aa882]">C{f.per100.c}</span>{' '}
+                        <span className="text-[#c97a57]">F{f.per100.f}</span>
+                      </div>
+                      <div className={`mt-1 text-[10px] font-semibold ${f.nutritionDataStatus === 'verified' ? 'text-[#5aa882]' : 'text-[#d4a24c]'}`}>
+                        {f.nutritionDataStatus === 'verified' ? 'بيانات موثقة' : 'بيانات غذائية غير موثقة'}
+                        {' · '}
+                        {f.nutritionBasis === 'raw' ? 'نيء' : f.nutritionBasis === 'cooked' ? 'مطبوخ' : f.nutritionBasis === 'as_sold' ? 'كما يباع' : 'حالة الوزن غير محددة'}
+                        {f.nutritionSource && f.nutritionSource !== 'TODO_VERIFY' ? ` · ${f.nutritionSource}` : ''}
+                        {f.sourceRecordId ? ` (#${f.sourceRecordId})` : ''}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdate((prev) => ({
+                          ...prev,
+                          foods: prev.foods.map((x) =>
+                            x.id === f.id ? { ...x, available: !isAvailable } : x
+                          ),
+                        }))
+                      }
+                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold cursor-pointer ${
+                        isAvailable
+                          ? 'bg-[#13211a] border-[#5aa882]/50 text-[#5aa882]'
+                          : 'bg-[#1f1412] border-[#c45d51]/50 text-[#c45d51]'
+                      }`}
+                    >
+                      {isAvailable ? 'متوفر' : 'متوقف'}
+                    </button>
+
+                    <label className="text-[11px] text-[#9b988d]">دج/{unit}:</label>
+                    <input
+                      type="number"
+                      value={f.price}
+                      onChange={(e) => {
+                        const price = Math.max(0, parseFloat(e.target.value) || 0);
+                        onUpdate((prev) => ({
+                          ...prev,
+                          foods: prev.foods.map((x) =>
+                            x.id === f.id ? { ...x, price } : x
+                          ),
+                        }));
+                      }}
+                      className="w-20 bg-[#171a16] border border-[#252823] rounded-lg px-2 py-1.5 text-center tabular-nums font-bold text-[#e5cf94]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsNewFood(false);
+                        setEditingFood(JSON.parse(JSON.stringify(f)));
+                      }}
+                      className="p-1.5 text-[#9b988d] hover:text-[#e5cf94] cursor-pointer"
+                      aria-label="تعديل"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteFood(f.id)}
+                      className="p-1.5 text-[#c45d51] cursor-pointer"
+                      aria-label="حذف"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: READY DISHES */}
+      {subTab === 'dishes' && (
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => {
+              setIsNewDish(true);
+              setNewIngId(state.foods[0]?.id || '');
+              setEditingDish({
+                id: `d_${Date.now()}`,
+                emoji: '',
+                name: '',
+                ing: [],
+                available: true,
+              });
+            }}
+            className="px-4 py-2.5 rounded-xl font-bold text-xs text-[#141108] bg-gradient-to-l from-[#e5cf94] to-[#c9a85c] flex items-center gap-1.5 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            إضافة طبق جديد
+          </button>
+
+          <div className="bg-[#111411] border border-[#252823] rounded-2xl divide-y divide-[#222520]">
+            {state.dishes.map((d) => {
+              const mac = dishMacros(d, state.foods, 1);
+              const isAvailable = d.available !== false;
+              return (
+                <div
+                  key={d.id}
+                  className={`p-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 text-xs ${
+                    !isAvailable ? 'opacity-55' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <img
+                      src={getDishImage(d, state.foods)}
+                      alt={d.name}
+                      referrerPolicy="no-referrer"
+                      className="w-12 h-12 rounded-xl object-cover border border-[#252823] shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-bold text-[#f3f1ec] truncate">{d.name}</div>
+                      <div className="text-[11px] text-[#9b988d] tabular-nums mt-0.5">
+                        {round0(mac.kcal)} kcal · {round0(mac.grams)}غ ·{' '}
+                        <span className="text-[#d4a24c]">P{round0(mac.p)}</span>{' '}
+                        <span className="text-[#5aa882]">C{round0(mac.c)}</span>{' '}
+                        <span className="text-[#c97a57]">F{round0(mac.f)}</span> ·{' '}
+                        <span className="text-[#e5cf94] font-bold">{round0(mac.price)} دج</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdate((prev) => ({
+                          ...prev,
+                          dishes: prev.dishes.map((x) =>
+                            x.id === d.id ? { ...x, available: !isAvailable } : x
+                          ),
+                        }))
+                      }
+                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold cursor-pointer ${
+                        isAvailable
+                          ? 'bg-[#13211a] border-[#5aa882]/50 text-[#5aa882]'
+                          : 'bg-[#1f1412] border-[#c45d51]/50 text-[#c45d51]'
+                      }`}
+                    >
+                      {isAvailable ? 'متوفر' : 'متوقف'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsNewDish(false);
+                        setNewIngId(state.foods[0]?.id || '');
+                        setEditingDish(JSON.parse(JSON.stringify(d)));
+                      }}
+                      className="p-1.5 text-[#9b988d] hover:text-[#e5cf94] cursor-pointer"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteDish(d.id)}
+                      className="p-1.5 text-[#c45d51] cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: DELIVERY ZONES, PRICING RULES & CAPACITY */}
+      {subTab === 'pricing' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+          <div className="lg:col-span-5 space-y-4">
+            <div className="bg-[#111411] border border-[#252823] rounded-2xl p-4 space-y-3">
+              <h2 className="text-sm font-bold text-[#e5cf94]">
+                قواعد التسعير والتشغيل
+              </h2>
+
+              <div>
+                <label className="block text-xs text-[#9b988d] mb-1">
+                  نسبة المناولة المعلنة (%)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={50}
+                  step={0.5}
+                  value={pricingCfg.handlingPct}
+                  onChange={(e) => {
+                    const v = Math.max(0, Math.min(50, parseFloat(e.target.value) || 0));
+                    onUpdate((prev) => ({
+                      ...prev,
+                      pricingConfig: { ...pricingCfg, handlingPct: v },
+                    }));
+                  }}
+                  className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-sm font-bold text-[#f3f1ec] tabular-nums"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-[#9b988d] mb-1">
+                  أجر الخدمة لكل وجبة (دج)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={2000}
+                  step={10}
+                  value={pricingCfg.serviceFeePerMeal}
+                  onChange={(e) => {
+                    const v = Math.max(0, parseInt(e.target.value, 10) || 0);
+                    onUpdate((prev) => ({
+                      ...prev,
+                      pricingConfig: { ...pricingCfg, serviceFeePerMeal: v },
+                    }));
+                  }}
+                  className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-sm font-bold text-[#f3f1ec] tabular-nums"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-[#9b988d] mb-1">
+                    ساعة الإغلاق (08–23)
+                  </label>
+                  <input
+                    type="number"
+                    min={8}
+                    max={23}
+                    value={pricingCfg.cutoffHour}
+                    onChange={(e) => {
+                      const v = Math.max(8, Math.min(23, parseInt(e.target.value, 10) || 16));
+                      onUpdate((prev) => ({
+                        ...prev,
+                        pricingConfig: { ...pricingCfg, cutoffHour: v },
+                      }));
+                    }}
+                    className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-sm font-bold text-[#f3f1ec] tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-[#9b988d] mb-1">
+                    الطاقة اليومية (علبة)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={state.cap}
+                    onChange={(e) =>
+                      onUpdate((prev) => ({
+                        ...prev,
+                        cap: Math.max(1, parseInt(e.target.value, 10) || 1),
+                      }))
+                    }
+                    className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-sm font-bold text-[#e5cf94] tabular-nums"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-[#111411] border border-[#c9a85c]/40 rounded-2xl p-4 space-y-2 text-xs">
+              <div className="font-bold text-[#e5cf94]">
+                معاينة حية للفاتورة (مثال: 1000 دج مكونات + 3 وجبات)
+              </div>
+              <div className="flex justify-between text-[#9b988d]">
+                <span>المكونات</span>
+                <span className="tabular-nums text-[#f3f1ec]">{sampleInvoice.ing} دج</span>
+              </div>
+              <div className="flex justify-between text-[#9b988d]">
+                <span>مناولة ({pricingCfg.handlingPct}%)</span>
+                <span className="tabular-nums text-[#f3f1ec]">{sampleInvoice.handling} دج</span>
+              </div>
+              <div className="flex justify-between text-[#9b988d]">
+                <span>أجر الخدمة ({pricingCfg.serviceFeePerMeal} × 3)</span>
+                <span className="tabular-nums text-[#f3f1ec]">{sampleInvoice.service} دج</span>
+              </div>
+              <div className="flex justify-between text-[#9b988d]">
+                <span>التوصيل ({selectedZone.title})</span>
+                <span className="tabular-nums text-[#f3f1ec]">{sampleInvoice.delivery} دج</span>
+              </div>
+              <div className="flex justify-between pt-2 border-t border-[#222520] font-bold">
+                <span className="text-[#f3f1ec]">الإجمالي النهائي</span>
+                <span className="text-base text-[#e5cf94] tabular-nums">
+                  {sampleInvoice.total} دج
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="lg:col-span-7 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-[#f3f1ec] flex items-center gap-2">
+                <Truck className="w-4 h-4 text-[#c9a85c]" />
+                مناطق التوصيل وأسعارها
+              </h2>
+              <button
+                type="button"
+                onClick={addZone}
+                className="px-3.5 py-2 rounded-xl font-bold text-xs text-[#141108] bg-gradient-to-l from-[#e5cf94] to-[#c9a85c] flex items-center gap-1 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                إضافة منطقة
+              </button>
+            </div>
+
+            <div className="space-y-2.5">
+              {state.zones.map((z) => (
+                <div
+                  key={z.id}
+                  className={`bg-[#111411] border border-[#252823] rounded-2xl p-3.5 space-y-2.5 ${
+                    !z.active ? 'opacity-60' : ''
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <input
+                      type="text"
+                      value={z.title}
+                      onChange={(e) => updateZone(z.id, { title: e.target.value })}
+                      className="bg-[#171a16] border border-[#252823] rounded-lg px-2.5 py-1.5 text-xs font-bold text-[#f3f1ec] flex-1 min-w-0"
+                    />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <input
+                        type="number"
+                        min={0}
+                        step={50}
+                        value={z.fee}
+                        onChange={(e) =>
+                          updateZone(z.id, {
+                            fee: Math.max(0, parseInt(e.target.value, 10) || 0),
+                          })
+                        }
+                        className="w-20 bg-[#171a16] border border-[#252823] rounded-lg px-2 py-1.5 text-center text-xs font-bold text-[#e5cf94] tabular-nums"
+                      />
+                      <span className="text-[11px] text-[#9b988d]">دج</span>
+                      <button
+                        type="button"
+                        onClick={() => updateZone(z.id, { active: !z.active })}
+                        className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-bold cursor-pointer ${
+                          z.active
+                            ? 'bg-[#13211a] border-[#5aa882]/50 text-[#5aa882]'
+                            : 'bg-[#1f1412] border-[#c45d51]/50 text-[#c45d51]'
+                        }`}
+                      >
+                        {z.active ? 'نشطة' : 'موقوفة'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteZone(z.id)}
+                        className="p-1.5 text-[#c45d51] cursor-pointer"
+                        aria-label="حذف المنطقة"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      value={z.areas}
+                      onChange={(e) => updateZone(z.id, { areas: e.target.value })}
+                      placeholder="الأحياء المشمولة"
+                      className="bg-[#171a16] border border-[#252823] rounded-lg px-2.5 py-1.5 text-[11px] text-[#9b988d]"
+                    />
+                    <input
+                      type="text"
+                      value={z.hours}
+                      onChange={(e) => updateZone(z.id, { hours: e.target.value })}
+                      placeholder="ساعات التوصيل"
+                      className="bg-[#171a16] border border-[#252823] rounded-lg px-2.5 py-1.5 text-[11px] text-[#9b988d]"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: ORDERS & PRODUCTION SHOPPING LIST */}
+      {subTab === 'orders' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-[#d4a24c]/30 bg-[#241e12]/70 px-4 py-3 text-[11px] leading-6 text-[#d8cba9]">
+            <strong className="text-[#e5cf94]">لوحة معاينة محلية:</strong>
+            الطلبات والسعة محفوظة على هذا الجهاز فقط. قائمة الشراء تقديرية ولا تُستخدم للتوريد قبل توثيق حالة كل مكوّن وعوامل مردود الطهي.
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div className="bg-[#111411] border border-[#252823] rounded-2xl p-3.5">
+              <div className="text-[11px] text-[#9b988d]">العلب المؤكدة ({formatArabicDate(dlv.date)})</div>
+              <div className="text-xl font-bold text-[#5aa882] tabular-nums mt-1">
+                {productionData.totalBoxes} / {state.cap}
+              </div>
+            </div>
+            <div className="bg-[#111411] border border-[#252823] rounded-2xl p-3.5">
+              <div className="text-[11px] text-[#9b988d]">قائمة الانتظار</div>
+              <div className="text-xl font-bold text-[#d4a24c] tabular-nums mt-1">
+                {productionData.waitlisted.length} طلب
+              </div>
+            </div>
+            <div className="bg-[#111411] border border-[#252823] rounded-2xl p-3.5">
+              <div className="text-[11px] text-[#9b988d]">إجمالي المداخيل</div>
+              <div className="text-xl font-bold text-[#e5cf94] tabular-nums mt-1">
+                {round0(productionData.totalRevenue)} دج
+              </div>
+            </div>
+            <div className="bg-[#111411] border border-[#252823] rounded-2xl p-3.5">
+              <div className="text-[11px] text-[#9b988d]">تكلفة المكونات التقديرية</div>
+              <div className="text-xl font-bold text-[#f3f1ec] tabular-nums mt-1">
+                {round0(productionData.totalIngCost)} دج
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <div className="lg:col-span-5 bg-[#111411] border border-[#252823] rounded-2xl p-4 space-y-3">
+              <h2 className="text-sm font-bold text-[#f3f1ec]">
+                قائمة الشراء والإنتاج ({formatArabicDate(dlv.date)})
+              </h2>
+              {productionData.shoppingList.length === 0 ? (
+                <div className="text-xs text-[#6d6b62]">
+                  لا توجد طلبات مؤكدة لدورة الإنتاج القادمة بعد. لا نشتري غرامًا غير مباع.
+                </div>
+              ) : (
+                <div className="divide-y divide-[#222520] text-xs">
+                  {productionData.shoppingList.map((row) => (
+                    <div key={row.id} className="py-2 flex items-center justify-between gap-2">
+                      <span className="text-[#f3f1ec] font-semibold">{row.name}</span>
+                      <span className="text-[#c9a85c] font-bold tabular-nums">
+                        {round0(row.grams)} غ · {round0(row.estCost)} دج
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="lg:col-span-7 bg-[#111411] border border-[#252823] rounded-2xl p-4 space-y-3">
+              <h2 className="text-sm font-bold text-[#f3f1ec]">إدارة الطلبات ({state.ord.length})</h2>
+              {state.ord.length === 0 ? (
+                <div className="text-xs text-[#6d6b62]">لا توجد طلبات مسجّلة حتى الآن.</div>
+              ) : (
+                <div className="space-y-2.5">
+                  {[...state.ord].reverse().map((o) => (
+                    <div
+                      key={o.id}
+                      className="bg-[#171a16] border border-[#252823] rounded-xl p-3 space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="text-xs font-bold text-[#f3f1ec]">
+                            {o.id} · {formatArabicDate(o.date)} · {o.n} وجبات
+                          </div>
+                          <div className="text-[11px] text-[#9b988d] mt-0.5 tabular-nums">
+                            {o.zoneTitle} · <b className="text-[#e5cf94]">{o.total} دج</b>
+                            {o.note && ` · ملاحظة: ${o.note}`}
+                          </div>
+                        </div>
+                        <span
+                          className={`text-[11px] font-bold shrink-0 ${
+                            o.status === 'C'
+                              ? 'text-[#5aa882]'
+                              : o.status === 'W'
+                                ? 'text-[#d4a24c]'
+                                : 'text-[#c45d51]'
+                          }`}
+                        >
+                          {o.status === 'C' ? 'مؤكد' : o.status === 'W' ? 'قائمة انتظار' : 'ملغى'}
+                        </span>
+                      </div>
+
+                      <div className="text-[11px] text-[#9b988d]">
+                        {o.items.map((it) => `${it.label} (${it.grams}غ)`).join(' · ')}
+                      </div>
+
+                      {o.status === 'C' && (
+                        <div className="rounded-xl border border-[#252823] bg-[#111411] p-3 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-bold text-[#c9a85c]">مرحلة التحضير والتسليم</span>
+                            <span className="text-[10px] text-[#9b988d]">تحديث تجريبي محلي</span>
+                          </div>
+                          <select
+                            value={o.productionStage || 'queued'}
+                            onChange={(e) => {
+                              const stage = e.target.value as NonNullable<Order['productionStage']>;
+                              onUpdate((prev) => ({
+                                ...prev,
+                                ord: prev.ord.map((x) =>
+                                  x.id === o.id ? { ...x, productionStage: stage } : x
+                                ),
+                              }));
+                              onToast('تم تحديث مرحلة الطلب في المعاينة');
+                            }}
+                            className="w-full rounded-lg border border-[#252823] bg-[#171a16] px-3 py-2 text-xs text-[#f3f1ec]"
+                          >
+                            <option value="queued">بانتظار التحضير</option>
+                            <option value="preparing">قيد التحضير</option>
+                            <option value="packed">تم الوزن والتعبئة</option>
+                            <option value="out_for_delivery">خرج للتوصيل</option>
+                            <option value="delivered">تم التسليم</option>
+                          </select>
+                        </div>
+                      )}
+
+                      {o.status !== 'X' && (
+                        <div className="flex gap-2 pt-1">
+                          {o.status === 'W' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onUpdate((prev) => ({
+                                  ...prev,
+                                  ord: prev.ord.map((x) =>
+                                    x.id === o.id ? { ...x, status: 'C', productionStage: 'queued' as const } : x
+                                  ),
+                                }));
+                                onToast(`تم تأكيد الطلب ${o.id}`);
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-[#13211a] border border-[#5aa882]/50 text-[11px] font-bold text-[#5aa882] flex items-center gap-1 cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              تأكيد الإنتاج
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onUpdate((prev) => ({
+                                ...prev,
+                                ord: prev.ord.map((x) =>
+                                  x.id === o.id ? { ...x, status: 'X' } : x
+                                ),
+                              }));
+                              onToast(`تم إلغاء الطلب ${o.id}`);
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-[#1f1412] border border-[#4a2b26] text-[11px] font-bold text-[#c45d51] cursor-pointer"
+                          >
+                            إلغاء
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT FOOD MODAL */}
+      {editingFood && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setEditingFood(null)}
+        >
+          <div
+            className="w-full max-w-md max-h-[90vh] overflow-y-auto bg-[#111411] border border-[#c9a85c] rounded-2xl p-5 space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-[#f3f1ec]">
+                {isNewFood ? 'إضافة طعام جديد' : 'تعديل الطعام'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingFood(null)}
+                className="text-[#9b988d] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-[#9b988d]">اسم الطعام (بالعربية)</label>
+              <input
+                type="text"
+                value={editingFood.name}
+                onChange={(e) =>
+                  setEditingFood({ ...editingFood, name: e.target.value })
+                }
+                placeholder="مثال: ستيك فيليه بقري"
+                className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-xs text-[#f3f1ec] mt-1"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-[#9b988d]">الاسم بالفرنسية (اختياري)</label>
+                <input
+                  type="text"
+                  value={editingFood.nameFr ?? ''}
+                  onChange={(e) =>
+                    setEditingFood({ ...editingFood, nameFr: e.target.value })
+                  }
+                  placeholder="Filet de boeuf"
+                  className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-xs text-[#f3f1ec] mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-[#9b988d]">الاسم بالإنجليزية (اختياري)</label>
+                <input
+                  type="text"
+                  value={editingFood.nameEn ?? ''}
+                  onChange={(e) =>
+                    setEditingFood({ ...editingFood, nameEn: e.target.value })
+                  }
+                  placeholder="Beef tenderloin"
+                  className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-xs text-[#f3f1ec] mt-1"
+                />
+              </div>
+            </div>
+
+            {/* Optional Custom Photo */}
+            <div className="flex items-center gap-3 bg-[#171a16] border border-[#252823] rounded-xl p-2.5">
+              <img
+                src={getFoodImage(editingFood)}
+                alt={editingFood.name || 'صورة الطعام'}
+                referrerPolicy="no-referrer"
+                className="w-12 h-12 rounded-lg object-cover border border-[#252823] shrink-0"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] font-semibold text-[#f3f1ec]">صورة الطعام</div>
+                <div className="text-[10px] text-[#9b988d]">
+                  تستخدم صورة الفئة الفاخرة تلقائيًا أو ارفع صورة خاصة
+                </div>
+              </div>
+              <label className="px-2.5 py-1.5 rounded-lg bg-[#242117] border border-[#c9a85c]/40 text-[11px] font-bold text-[#e5cf94] flex items-center gap-1 cursor-pointer shrink-0">
+                <Camera className="w-3.5 h-3.5" />
+                <span>تغيير</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleUploadFoodPhoto}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11px] text-[#9b988d]">الفئة</label>
+                <select
+                  value={editingFood.cat}
+                  onChange={(e) =>
+                    setEditingFood({
+                      ...editingFood,
+                      cat: e.target.value as FoodCategory,
+                    })
+                  }
+                  className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-xs text-[#f3f1ec] mt-1"
+                >
+                  <option value="protein">بروتين</option>
+                  <option value="carb">كارب</option>
+                  <option value="fat">دهون</option>
+                  <option value="veg">خضر</option>
+                  <option value="juice">عصائر وسموذي</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] text-[#9b988d]">السعر / 100{editingFood.cat === 'juice' ? 'مل' : 'غ'} (دج)</label>
+                <input
+                  type="number"
+                  value={editingFood.price}
+                  onChange={(e) =>
+                    setEditingFood({
+                      ...editingFood,
+                      price: Math.max(0, parseFloat(e.target.value) || 0),
+                    })
+                  }
+                  className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 tabular-nums text-xs text-[#e5cf94] font-bold mt-1"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-5 gap-1.5">
+              {(
+                [
+                  ['kcal', 'kcal'],
+                  ['p', 'P'],
+                  ['c', 'C'],
+                  ['f', 'F'],
+                  ['fiber', 'ألياف'],
+                ] as const
+              ).map(([k, lbl]) => (
+                <div key={k}>
+                  <label className="text-[10px] text-[#9b988d] block text-center">{lbl}</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={editingFood.per100[k]}
+                    onChange={(e) =>
+                      setEditingFood({
+                        ...editingFood,
+                        per100: {
+                          ...editingFood.per100,
+                          [k]: parseFloat(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-full bg-[#171a16] border border-[#252823] rounded-lg px-1.5 py-1.5 text-center tabular-nums text-xs text-[#f3f1ec]"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div>
+              <label className="text-[11px] text-[#9b988d] block mb-1.5">الحساسيات</label>
+              <div className="flex flex-wrap gap-1.5">
+                {(Object.keys(ALLERGENS) as AllergenKey[]).map((ak) => {
+                  const active = editingFood.al.includes(ak);
+                  return (
+                    <button
+                      key={ak}
+                      type="button"
+                      onClick={() =>
+                        setEditingFood({
+                          ...editingFood,
+                          al: active
+                            ? editingFood.al.filter((x) => x !== ak)
+                            : [...editingFood.al, ak],
+                        })
+                      }
+                      className={`px-2.5 py-1 rounded-lg border text-xs font-bold cursor-pointer ${
+                        active
+                          ? 'bg-[#242117] border-[#c9a85c] text-[#e5cf94]'
+                          : 'bg-[#171a16] border-[#252823] text-[#9b988d]'
+                      }`}
+                    >
+                      {ALLERGENS[ak]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[#252823] bg-[#171a16] p-3 space-y-2.5">
+              <div>
+                <div className="text-xs font-bold text-[#e5cf94]">توثيق القيم الغذائية</div>
+                <p className="mt-1 text-[10px] leading-5 text-[#9b988d]">
+                  لا تعتمد أي قيمة قبل تحديد مرجعها وحالة الطعام التي تنطبق عليها.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-[#9b988d]">حالة التوثيق</label>
+                  <select
+                    value={editingFood.nutritionDataStatus ?? 'unverified'}
+                    onChange={(e) => setEditingFood({
+                      ...editingFood,
+                      nutritionDataStatus: e.target.value as 'verified' | 'unverified',
+                    })}
+                    className="mt-1 w-full rounded-lg border border-[#252823] bg-[#111411] px-2 py-2 text-xs text-[#f3f1ec]"
+                  >
+                    <option value="unverified">غير موثق</option>
+                    <option value="verified">موثق</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-[#9b988d]">حالة الوزن</label>
+                  <select
+                    value={editingFood.nutritionBasis ?? 'unspecified'}
+                    onChange={(e) => setEditingFood({
+                      ...editingFood,
+                      nutritionBasis: e.target.value as 'raw' | 'cooked' | 'as_sold' | 'unspecified',
+                    })}
+                    className="mt-1 w-full rounded-lg border border-[#252823] bg-[#111411] px-2 py-2 text-xs text-[#f3f1ec]"
+                  >
+                    <option value="unspecified">غير محدد</option>
+                    <option value="raw">نيء</option>
+                    <option value="cooked">مطبوخ</option>
+                    <option value="as_sold">كما يباع</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] text-[#9b988d]">المصدر العلمي</label>
+                <input
+                  value={editingFood.nutritionSource ?? ''}
+                  onChange={(e) => setEditingFood({ ...editingFood, nutritionSource: e.target.value })}
+                  placeholder="مثال: USDA FoodData Central"
+                  className="mt-1 w-full rounded-lg border border-[#252823] bg-[#111411] px-3 py-2 text-xs text-[#f3f1ec]"
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] text-[#9b988d]">رقم السجل</label>
+                  <input
+                    value={editingFood.sourceRecordId ?? ''}
+                    onChange={(e) => setEditingFood({ ...editingFood, sourceRecordId: e.target.value })}
+                    placeholder="FDC 171077"
+                    className="mt-1 w-full rounded-lg border border-[#252823] bg-[#111411] px-2.5 py-2 text-xs text-[#f3f1ec] tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-[#9b988d]">القابل للأكل (%)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={editingFood.ediblePortionPct ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? undefined : Math.max(1, Math.min(100, parseFloat(e.target.value) || 100));
+                      setEditingFood({ ...editingFood, ediblePortionPct: val });
+                    }}
+                    placeholder="100"
+                    className="mt-1 w-full rounded-lg border border-[#252823] bg-[#111411] px-2.5 py-2 text-xs text-[#f3f1ec] tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-[#9b988d]">معامل الطهي</label>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min={0.1}
+                    max={5}
+                    value={editingFood.cookingYield ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? undefined : Math.max(0.1, parseFloat(e.target.value) || 1);
+                      setEditingFood({ ...editingFood, cookingYield: val });
+                    }}
+                    placeholder="0.75"
+                    className="mt-1 w-full rounded-lg border border-[#252823] bg-[#111411] px-2.5 py-2 text-xs text-[#f3f1ec] tabular-nums"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={saveFood}
+              className="w-full py-3 rounded-xl font-bold text-sm text-[#141108] bg-gradient-to-l from-[#e5cf94] to-[#c9a85c] cursor-pointer"
+            >
+              حفظ الطعام
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT DISH MODAL */}
+      {editingDish && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setEditingDish(null)}
+        >
+          <div
+            className="w-full max-w-md max-h-[90vh] overflow-y-auto bg-[#111411] border border-[#c9a85c] rounded-2xl p-5 space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-[#f3f1ec]">
+                {isNewDish ? 'إضافة طبق جديد' : 'تعديل الطبق'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingDish(null)}
+                className="text-[#9b988d] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-[#9b988d]">اسم الطبق</label>
+              <input
+                type="text"
+                value={editingDish.name}
+                onChange={(e) =>
+                  setEditingDish({ ...editingDish, name: e.target.value })
+                }
+                placeholder="مثال: دجاج مشوي مع أرز بسمتي"
+                className="w-full bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-xs text-[#f3f1ec] mt-1"
+              />
+            </div>
+
+            {/* Optional Dish Photo */}
+            <div className="flex items-center gap-3 bg-[#171a16] border border-[#252823] rounded-xl p-2.5">
+              <img
+                src={getDishImage(editingDish, state.foods)}
+                alt={editingDish.name || 'صورة الطبق'}
+                referrerPolicy="no-referrer"
+                className="w-12 h-12 rounded-lg object-cover border border-[#252823] shrink-0"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] font-semibold text-[#f3f1ec]">صورة الطبق</div>
+                <div className="text-[10px] text-[#9b988d]">
+                  صورة تلقائية أو ارفع صورة مخصصة للطبق
+                </div>
+              </div>
+              <label className="px-2.5 py-1.5 rounded-lg bg-[#242117] border border-[#c9a85c]/40 text-[11px] font-bold text-[#e5cf94] flex items-center gap-1 cursor-pointer shrink-0">
+                <Camera className="w-3.5 h-3.5" />
+                <span>تغيير</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleUploadDishPhoto}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="text-xs font-bold text-[#9b988d]">مكونات الطبق بالغرام</div>
+              {editingDish.ing.map(([fid, g], idx) => {
+                const f = state.foods.find((x) => x.id === fid);
+                if (!f) return null;
+                return (
+                  <div key={`${fid}_${idx}`} className="flex items-center gap-2 text-xs">
+                    <span className="flex-1 text-[#f3f1ec]">{f.name}</span>
+                    <input
+                      type="number"
+                      value={g}
+                      onChange={(e) => {
+                        const val = Math.max(0, parseFloat(e.target.value) || 0);
+                        const next = [...editingDish.ing];
+                        next[idx] = [fid, val];
+                        setEditingDish({ ...editingDish, ing: next });
+                      }}
+                      className="w-20 bg-[#171a16] border border-[#252823] rounded-lg px-2 py-1 text-center tabular-nums text-[#f3f1ec]"
+                    />
+                    <span className="text-[#9b988d]">غ</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditingDish({
+                          ...editingDish,
+                          ing: editingDish.ing.filter((_, i) => i !== idx),
+                        })
+                      }
+                      className="text-[#c45d51] px-1 cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+
+              <div className="flex gap-2 pt-2">
+                <select
+                  value={newIngId}
+                  onChange={(e) => setNewIngId(e.target.value)}
+                  className="flex-1 bg-[#171a16] border border-[#252823] rounded-xl px-3 py-2 text-xs text-[#f3f1ec]"
+                >
+                  {state.foods.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!newIngId) return;
+                    setEditingDish({
+                      ...editingDish,
+                      ing: [...editingDish.ing, [newIngId, 100]],
+                    });
+                  }}
+                  className="px-4 py-2 rounded-xl bg-[#171a16] border border-[#c9a85c]/50 text-xs font-bold text-[#e5cf94] cursor-pointer"
+                >
+                  + أضف
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={saveDish}
+              className="w-full py-3 rounded-xl font-bold text-sm text-[#141108] bg-gradient-to-l from-[#e5cf94] to-[#c9a85c] cursor-pointer"
+            >
+              حفظ الطبق
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+==========================================================================================
+FILE: src/components/AuthView.tsx
+==========================================================================================
+import React, { useState } from 'react';
+import { apiRequest, ApiSession } from '../services/api';
+import { ArrowLeft, ShieldCheck, Sparkles } from 'lucide-react';
+
+interface AuthViewProps {
+  onAuthenticated: (session: ApiSession) => Promise<void>;
+}
+
+export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated }) => {
+  const [mode,setMode] = useState<'login'|'register'>('login');
+  const [name,setName] = useState('');
+  const [email,setEmail] = useState('');
+  const [password,setPassword] = useState('');
+  const [busy,setBusy] = useState(false);
+  const [error,setError] = useState('');
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      const result = await apiRequest<ApiSession>(
+        mode === 'register' ? '/api/auth/register' : '/api/auth/login',
+        undefined,
+        { method:'POST', body:JSON.stringify({name,email,password}) }
+      );
+      await onAuthenticated(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'تعذر إكمال العملية.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main dir="rtl" className="min-h-screen bg-[#09090b] text-[#f3f1ec] flex items-center justify-center px-4 py-10">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[#c8a96e]/35 bg-[#c8a96e]/10 text-[#e6d1a3]">
+            <Sparkles size={21} />
+          </div>
+          <div className="text-xs tracking-[.24em] text-[#c8a96e]">NUTRIFIT PRIVATE NUTRITION · DZ</div>
+          <h1 className="mt-4 text-2xl font-semibold text-balance">مساحتك الغذائية الخاصة</h1>
+          <p className="mt-2 text-sm leading-6 text-[#96938a]">سجّل الدخول لمتابعة ملفك وخطط وجباتك وطلباتك.</p>
+        </div>
+
+        <form onSubmit={submit} className="rounded-3xl border border-[#232329] bg-[#111114] p-5 sm:p-7 space-y-4 shadow-2xl">
+          <div className="flex rounded-xl bg-[#09090b] border border-[#232329] p-1">
+            <button type="button" onClick={() => {setMode('login');setError('');}} className={'touch-press flex-1 rounded-lg py-2.5 text-xs font-bold cursor-pointer ' + (mode==='login'?'bg-[#1c1a15] text-[#e6d1a3]':'text-[#96938a] hover:text-[#f3f1ec]')}>تسجيل الدخول</button>
+            <button type="button" onClick={() => {setMode('register');setError('');}} className={'touch-press flex-1 rounded-lg py-2.5 text-xs font-bold cursor-pointer ' + (mode==='register'?'bg-[#1c1a15] text-[#e6d1a3]':'text-[#96938a] hover:text-[#f3f1ec]')}>إنشاء حساب</button>
+          </div>
+
+          {mode === 'register' && (
+            <label className="block space-y-1.5">
+              <span className="text-xs text-[#f3f1ec]">الاسم الذي سيظهر في ملفك</span>
+              <input value={name} onChange={(e)=>setName(e.target.value)} required minLength={2} maxLength={100} autoComplete="name" className="w-full rounded-xl border border-[#232329] bg-[#18181c] px-3 py-3 text-sm text-[#f3f1ec] outline-none focus:border-[#c8a96e]" placeholder="اسمك" />
+            </label>
+          )}
+          <label className="block space-y-1.5">
+            <span className="text-xs text-[#f3f1ec]">البريد الإلكتروني</span>
+            <input value={email} onChange={(e)=>setEmail(e.target.value)} required type="email" autoComplete="email" className="w-full rounded-xl border border-[#232329] bg-[#18181c] px-3 py-3 text-sm text-[#f3f1ec] outline-none focus:border-[#c8a96e]" placeholder="name@example.com" />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-xs text-[#f3f1ec]">كلمة المرور</span>
+            <input value={password} onChange={(e)=>setPassword(e.target.value)} required minLength={mode==='register'?12:1} maxLength={128} type="password" autoComplete={mode==='register'?'new-password':'current-password'} className="w-full rounded-xl border border-[#232329] bg-[#18181c] px-3 py-3 text-sm text-[#f3f1ec] outline-none focus:border-[#c8a96e]" placeholder={mode==='register'?'12 حرفاً على الأقل':'كلمة المرور'} />
+            {mode === 'register' && <span className="block text-[10px] text-[#66645e]">استخدم كلمة مرور طويلة وفريدة لا تستعملها في خدمة أخرى.</span>}
+          </label>
+
+          {error && <div role="alert" className="rounded-xl border border-[#b86157]/40 bg-[#1a1111] p-3 text-xs leading-5 text-[#efb9ad]">{error}</div>}
+
+          <button disabled={busy} type="submit" className="touch-press w-full rounded-xl bg-gradient-to-l from-[#e6d1a3] to-[#c8a96e] py-3.5 text-sm font-extrabold text-[#141108] disabled:opacity-50 cursor-pointer">
+            {busy ? 'جارٍ التحقق…' : mode==='register'?'إنشاء حساب خاص':'الدخول إلى حسابي'}
+            {!busy && <ArrowLeft className="mr-1 inline h-4 w-4" />}
+          </button>
+
+          <div className="flex items-start gap-2 border-t border-[#232329] pt-4 text-[10px] leading-5 text-[#96938a]">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#c8a96e]" />
+            بيانات الحساب والملف الصحي تُرسل إلى خادم الخدمة عبر اتصال HTTPS عند تفعيل النسخة المتصلة. لا تدخل بيانات طبية غير لازمة.
+          </div>
+        </form>
+      </div>
+    </main>
+  );
+};
+
