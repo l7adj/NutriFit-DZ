@@ -1,0 +1,544 @@
+
+==========================================================================================
+FILE: db/migrations/002_delivery_assignment.sql
+==========================================================================================
+ALTER TABLE customer_orders
+  ADD COLUMN IF NOT EXISTS delivery_user_id UUID REFERENCES app_users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_orders_delivery_user
+  ON customer_orders(delivery_user_id, delivery_date);
+
+
+==========================================================================================
+FILE: db/migrations/003_profile_body_composition.sql
+==========================================================================================
+ALTER TABLE customer_profiles
+  ADD COLUMN IF NOT EXISTS lbm_kg NUMERIC(6,2),
+  ADD COLUMN IF NOT EXISTS lbm_reliability_pct NUMERIC(5,2),
+  ADD COLUMN IF NOT EXISTS lbm_method TEXT NOT NULL DEFAULT 'none';
+
+ALTER TABLE customer_profiles
+  DROP CONSTRAINT IF EXISTS customer_profiles_lbm_method_check;
+ALTER TABLE customer_profiles
+  ADD CONSTRAINT customer_profiles_lbm_method_check
+  CHECK (lbm_method IN ('none','dexa','inbody','other'));
+
+ALTER TABLE customer_profiles
+  DROP CONSTRAINT IF EXISTS customer_profiles_lbm_kg_check;
+ALTER TABLE customer_profiles
+  ADD CONSTRAINT customer_profiles_lbm_kg_check
+  CHECK (lbm_kg IS NULL OR lbm_kg BETWEEN 1 AND 300);
+
+ALTER TABLE customer_profiles
+  DROP CONSTRAINT IF EXISTS customer_profiles_lbm_reliability_pct_check;
+ALTER TABLE customer_profiles
+  ADD CONSTRAINT customer_profiles_lbm_reliability_pct_check
+  CHECK (lbm_reliability_pct IS NULL OR lbm_reliability_pct BETWEEN 0 AND 100);
+
+ALTER TABLE customer_profiles
+  DROP CONSTRAINT IF EXISTS customer_profile_lbm_not_above_weight;
+ALTER TABLE customer_profiles
+  ADD CONSTRAINT customer_profile_lbm_not_above_weight
+  CHECK (lbm_kg IS NULL OR weight_kg IS NULL OR lbm_kg <= weight_kg);
+
+
+==========================================================================================
+FILE: db/migrations/004_order_food_provenance.sql
+==========================================================================================
+ALTER TABLE order_item_ingredients
+  ADD COLUMN IF NOT EXISTS nutrition_basis_snapshot TEXT NOT NULL DEFAULT 'unspecified',
+  ADD COLUMN IF NOT EXISTS nutrition_source_snapshot TEXT;
+
+ALTER TABLE order_item_ingredients
+  DROP CONSTRAINT IF EXISTS order_item_ingredients_basis_snapshot_check;
+ALTER TABLE order_item_ingredients
+  ADD CONSTRAINT order_item_ingredients_basis_snapshot_check
+  CHECK (nutrition_basis_snapshot IN ('raw','cooked','as_sold','unspecified'));
+
+CREATE INDEX IF NOT EXISTS idx_order_ingredients_food_snapshot
+  ON order_item_ingredients(food_id);
+
+
+==========================================================================================
+FILE: docs/BACKEND_DEPLOYMENT.md
+==========================================================================================
+# تشغيل الخادم وربط النسخة المتصلة
+
+## الحالة
+
+يتضمن المستودع الآن API مبنياً بـ Express وPostgreSQL، ومخططات قاعدة بيانات، ومصادقة JWT، وصلاحيات خادمية، ومسارات للعميل والإدارة والمطبخ والتوصيل. لكن إضافة الكود لا تعني أن الخدمة أصبحت منشورة أو متصلة بقاعدة بيانات حقيقية. يلزم إعداد بيئة استضافة وقاعدة بيانات وأسرار تشغيل قبل تفعيل الوضع المتصل.
+
+## المتطلبات
+
+- Node.js 22 أو أحدث.
+- PostgreSQL 15 أو أحدث مع اتصال TLS في بيئة الإنتاج.
+- نطاق HTTPS للخدمة.
+- قيمة سرية عشوائية لـ JWT لا تقل عن 32 حرفاً؛ لا تضعها في Git أو في متغيرات VITE_*.
+- نسخ احتياطي تلقائي لقاعدة البيانات.
+
+## الإعداد
+
+1. أنشئ قاعدة PostgreSQL مستقلة للإنتاج.
+2. انسخ ملف .env.example إلى .env على الخادم فقط.
+3. عيّن:
+   - DATABASE_URL: رابط PostgreSQL.
+   - DATABASE_SSL=true: تفعيل TLS لقاعدة البيانات.
+   - JWT_SECRET: سر عشوائي طويل وفريد.
+   - APP_ORIGIN: نطاق الواجهة، ويمكن أن يكون أكثر من نطاق مفصولاً بفواصل.
+   - VITE_API_ENABLED=true: يُقرأ وقت بناء الواجهة لتفعيل تسجيل الدخول والاتصال بالخادم.
+   - VITE_API_BASE_URL: اتركه فارغاً إذا كانت الواجهة والـ API على النطاق نفسه.
+4. ثبّت الحزم وشغّل الترحيلات والبناء:
+   ~~~bash
+   npm install
+   npm run db:migrate
+   npm run lint
+   npm test
+   npm run build
+   npm start
+   ~~~
+5. وجّه HTTPS إلى الخادم. يخدم Express ملفات dist ومسارات /api من الأصل نفسه.
+
+## إنشاء حساب الإدارة الأول
+
+التسجيل العام ينشئ حساب customer فقط. لا توجد واجهة عامة تمنح صلاحية الإدارة.
+
+1. أنشئ حساباً عادياً من شاشة التسجيل.
+2. شغّل أمر الترقية من بيئة الخادم الموثوقة بعد التحقق من البريد المقصود:
+
+   ~~~bash
+   BOOTSTRAP_ADMIN_EMAIL=admin@example.com npm run admin:promote
+   ~~~
+
+3. سجّل الخروج ثم الدخول مجدداً حتى يصدر JWT بالدور الجديد.
+4. أنشئ حسابات العاملين بالطريقة نفسها ثم غيّر الدور إلى kitchen أو delivery حسب الحاجة.
+
+لا تمنح دور admin لأي حساب لا يملكه المشغّل فعلياً.
+
+## تهيئة التشغيل قبل استقبال العملاء
+
+1. أضف مكونات غذائية من لوحة الإدارة، مع القيم لكل 100غ أو 100مل، ومصدر السجل، وحالة الوزن، ومسببات الحساسية.
+2. راجع كل سجل ثم اعتمده؛ يبقى المكوّن غير نشط حتى تفعيله صراحةً.
+3. أنشئ الوصفات من مكونات نشطة وموثقة، ثم راجعها وفعّلها.
+4. أنشئ مناطق الخدمة بأحياء وساعات حقيقية، ثم فعّل المناطق المعتمدة فقط.
+5. اضبط رسوم الخدمة وموعد الإغلاق والسعة اليومية. السعة 0 تعني إيقاف استقبال الطلبات.
+6. أنشئ حسابات المطبخ والتوصيل، ثم اسند الطلبات المؤكدة إلى حساب توصيل محدد.
+
+## مسارات API الأساسية
+
+| المسار | الصلاحية | الغرض |
+|---|---|---|
+| POST /api/auth/register | عام | إنشاء حساب عميل |
+| POST /api/auth/login | عام | تسجيل الدخول |
+| GET /api/auth/me | مسجل | استعادة الحساب |
+| GET /api/foods و GET /api/dishes | عام | العناصر النشطة والموثقة فقط |
+| GET /api/zones | عام | مناطق الخدمة النشطة فقط |
+| GET/PUT /api/profile | عميل | الملف الغذائي والحساسيات |
+| POST/GET /api/orders | عميل | إنشاء الطلبات وعرض سجل العميل |
+| GET/POST/PATCH /api/admin/* | إدارة | إدارة المكونات والوصفات والمناطق والإعدادات والطلبات |
+| GET /api/kitchen/orders | إدارة/مطبخ | قائمة التحضير |
+| PATCH /api/kitchen/orders/:id/stage | إدارة/مطبخ/موصل مسند | الانتقال بين مراحل الإنتاج والتسليم |
+| GET /api/delivery/orders | موصل مسند | الطلبات المسندة إلى حسابه |
+
+## ضوابط مهمة
+
+- السعر والماكروز وحالة الطلب تُعاد حسابها على الخادم؛ لا يعتمد الخادم على السعر الذي يرسله المتصفح.
+- لا يقبل الخادم مكوّناً غير نشط أو غير موثق أو بلا حالة وزن ومصدر.
+- يُعاد فحص الحساسية والملف الصحي والسعة ومنطقة الخدمة عند إنشاء الطلب.
+- لا تُقبل الطلبات حتى تُضبط السعة اليومية إلى قيمة أكبر من صفر.
+- لا يمكن لحساب التوصيل رؤية طلبات موصل آخر أو تحديث مراحل المطبخ.
+- انتقالات المطبخ والتوصيل متسلسلة؛ لا يجوز تخطي مرحلة من حسابات العاملين.
+- جميع عمليات إنشاء الطلبات وتغيير المراحل المهمة تُسجل في audit_log.
+- JWT قصير العمر (12 ساعة) ويُحفظ في تخزين المتصفح في النسخة الحالية؛ استخدم HTTPS وسياسة CSP صارمة وراجع مخاطر XSS قبل الإطلاق.
+
+## ما لا يزال يحتاج مزوداً أو مراجعة خارجية
+
+- لا يوجد تكامل دفع إلكتروني؛ طريقة الدفع الحالية في قاعدة البيانات نقداً عند الاستلام وحالتها معلقة.
+- لا يوجد تكامل خرائط أو شركة توصيل؛ الإسناد والتحديثات تشغيل يدوي داخل لوحة الفريق.
+- لا يوجد تحقق بريد إلكتروني أو استعادة كلمة مرور أو MFA.
+- لا توجد خدمة تخزين صور سحابية للصور الشخصية.
+- لم تُملأ قاعدة الأغذية ببيانات إنتاج موثقة؛ لوحة الإدارة تبدأ فارغة في قاعدة البيانات الجديدة.
+- لا توجد بعد مراجعة أمنية مستقلة أو اختبار اختراق أو اعتماد من مختص تغذية وسلامة غذاء.
+
+**لا تفعّل VITE_API_ENABLED على خدمة عامة قبل إعداد قاعدة البيانات، وترقية حساب الإدارة، وإضافة مكونات ومناطق معتمدة، وتجربة طلب كامل من العميل إلى التسليم.**
+
+
+==========================================================================================
+FILE: docs/DEPLOYMENT.md
+==========================================================================================
+# تشغيل NutriFit DZ المتصل
+
+## الحالة
+
+المشروع يحتوي على واجهة عميل عربية، وخادم Express، وطبقة PostgreSQL، ومسارات منفصلة للعميل والإدارة والمطبخ والتوصيل. **وجود هذه الملفات لا يعني أن الخدمة مستضافة أو أن قاعدة بيانات حقيقية مرتبطة.** لا تُفعّل وضع API في الواجهة قبل تجهيز الخادم وقاعدة البيانات.
+
+## المتطلبات
+
+- Node.js 22
+- PostgreSQL 14 أو أحدث
+- عنوان HTTPS للواجهة والخادم في بيئة الإنتاج
+- قاعدة بيانات ونسخة احتياطية دورية
+- إعداد أسرار التشغيل في منصة الاستضافة، وليس داخل Git
+
+## الإعداد
+
+1. أنشئ قاعدة PostgreSQL مستقلة.
+2. انسخ `.env.example` إلى `.env` محلياً، ثم أدخل `DATABASE_URL` و`JWT_SECRET` عشوائياً بطول 32 حرفاً على الأقل.
+3. شغّل `npm install`.
+4. شغّل `npm run db:migrate` لتطبيق ملفات SQL بالترتيب.
+5. شغّل `npm run build` ثم `npm start`.
+6. اختبر `GET /api/health` وتأكد من أن حالة قاعدة البيانات `connected`.
+7. أنشئ حساباً عادياً من واجهة التسجيل، ثم امنحه دور الإدارة من بيئة الخادم فقط:
+
+```bash
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com npm run admin:promote
+```
+
+هذا أمر إداري يدوي لمرة واحدة. لا توجد واجهة عامة لترقية الحسابات. أنشئ حسابات المطبخ والتوصيل من أدوات إدارة قاعدة البيانات بعد التحقق من هوية أصحابها، مع تعيين الدور إلى `kitchen` أو `delivery`.
+
+## تفعيل واجهة API
+
+اضبط متغيرات بناء الواجهة:
+
+- `VITE_API_ENABLED=true`
+- `VITE_API_BASE_URL=` اتركه فارغاً إذا كانت الواجهة والخادم على نفس النطاق؛ وإلا ضع عنوان API الكامل.
+- `APP_ORIGIN` في الخادم يحدد النطاقات المسموح لها بطلبات CORS.
+
+أعد بناء الواجهة بعد تغيير متغيرات `VITE_*`، لأنها تُضمّن وقت البناء. لا تضع `DATABASE_URL` أو `JWT_SECRET` في أي متغير يبدأ بـ `VITE_`.
+
+## بوابات الإطلاق التي لم تُحسم بعد
+
+- لا توجد بوابة دفع إلكتروني أو تأكيد دفع؛ الحالة الافتراضية للدفع نقداً عند الاستلام و`pending`.
+- لم تُختبر رسائل SMS أو البريد أو الإشعارات.
+- بيانات الطعام والأسعار لا تصبح موثوقة بمجرد إدخالها؛ يلزم توثيق المصدر والوزن والتحقق من القيم واعتمادها إدارياً.
+- لا تفعّل مناطق التوصيل أو الطاقة اليومية قبل التأكد من القدرة الفعلية، ساعات الخدمة، التكاليف، ومسارات التوصيل.
+- يلزم اختبار قبول فعلي للعميل والمطبخ والسائق على بيئة تجريبية قبل استقبال أموال أو بيانات صحية حقيقية.
+- التوكن الحالي يُحفظ في تخزين المتصفح؛ قبل الإطلاق التجاري العام يُفضّل نقله إلى جلسة Cookie آمنة `HttpOnly` مع حماية CSRF، وتفعيل تحقق البريد ومراجعة أمنية مستقلة.
+
+## الفحوصات الآلية
+
+تعمل GitHub Actions على تنفيذ:
+- `npm run lint`
+- `npm test`
+- `npm run build`
+
+نجاح هذه الفحوصات لا يغني عن اختبار قاعدة بيانات فعلية، أو مراجعة أمنية، أو اختبار سير العمل في المطبخ والتوصيل.
+
+
+==========================================================================================
+FILE: docs/OPERATING_MODEL.md
+==========================================================================================
+# نموذج التشغيل المستهدف — NutriFit DZ
+
+> هذه وثيقة تصميم تشغيلي. البنود أدناه تصف السلوك المطلوب عند اكتمال الخادم والمطبخ، ولا تعني أن هذه العمليات متصلة حالياً. قيم الساعة والمنطقة والسعر في بيانات المعاينة أمثلة تحتاج اعتماداً تجارياً.
+
+## 1. رحلة العميل
+
+### أ. فتح الملف والتحقق من السلامة
+- إنشاء حساب موثق قبل حفظ بيانات صحية.
+- موافقة صريحة على معالجة قياسات الجسم والبيانات الصحية الضرورية.
+- بوابة السلامة تسأل عن العمر والحالات التي تتطلب إشرافاً طبياً والحساسيات وعدم التحمل.
+- الحالات عالية الخطورة لا تحصل على خطة آلية؛ تعرض سبب الإيقاف وخيار مراجعة مختص.
+- الحساسيات قيد منع صارم وليست مجرد تفضيل يمكن تجاوزه.
+
+### ب. الحساب الغذائي
+- تخزين مدخلات العميل مع وحدة القياس ومصدرها وتاريخ تحديثها.
+- حساب RMR بمعادلة موثقة؛ لا تُستخدم كتلة LBM إلا إذا كان القياس موثقاً.
+- اختيار PAL من نطاق واضح مع توثيق القيمة الافتراضية والاختيار اليدوي.
+- حفظ نسخة المحرك العلمي وإصداره ومعادلاته وافتراضاته مع كل نتيجة.
+- كل نتيجة تحمل تصنيفاً: F معادلة، R نطاق مرجعي، O اختيار تشغيلي، C افتراض معايرة.
+- لا يُفرض حد أدنى أو حد أقصى صامت يغيّر الطاقة المستهدفة. أي تعارض ينتج عنه تنبيه أو حجب مع تفسير.
+
+### ج. تصميم الوجبات
+- يعرض النظام الاحتياج اليومي والكمية المتبقية من الطاقة والبروتين والكربوهيدرات والدهون.
+- يختار العميل عدد الوجبات، ثم يوزع الأطباق والمكونات على كل وجبة.
+- كل مكوّن له حالة وزن صريحة: نيء، مطبوخ، أو كما يباع؛ ولا تُخلط القيم بين الحالات.
+- تظهر الكمية بالغرام، والماكروز، والسعر، والحساسيات، ومصدر بيانات الغذاء.
+- يمنع النظام إضافة عنصر غير متوفر أو يحتوي على مسببات حساسية مسجلة.
+- التعديلات على الكمية تعيد حساب الماكروز والسعر فوراً، مع عرض أثرها على اليوم كاملاً.
+
+### د. مراجعة الطلب
+قبل الإرسال، يعرض ملخصاً غير قابل للالتباس:
+- تاريخ التحضير/التسليم المتوقع والمنطقة والنافذة الزمنية.
+- عدد الوجبات ومكوناتها وأوزانها.
+- إجمالي السعر مع فصل المكونات والمناولة والخدمة والتوصيل.
+- ملاحظات العميل والحساسيات.
+- سياسة الإلغاء وآخر وقت لقبول الطلب.
+- حالة الطلب: مسودة، مرسل، قيد المراجعة، مؤكد، قيد التحضير، جاهز، خرج للتوصيل، تم التسليم، أو ملغى.
+
+لا يُخصم مخزون ولا تُرسل دفعة للمطبخ قبل تأكيد الخادم للطلب. يجب أن يكون الإرسال idempotent حتى لا ينتج عن النقر المتكرر طلبان.
+
+## 2. دورة الطلب والتحضير
+
+1. **استلام الطلب:** الخادم يتحقق من الحساب، الحساسية، الأسعار الحالية، توافر المكونات، السعة، والموعد.
+2. **مراجعة الإدارة:** الطلبات غير الاعتيادية أو التي تتجاوز الطاقة أو تحتوي على بيانات ناقصة تتوقف للمراجعة البشرية.
+3. **تجميع دفعة المطبخ:** تجميع كميات المكونات حسب وصفات الطلبات المؤكدة فقط، مع حفظ نسخة الوصفة والسعر وقت الطلب.
+4. **قائمة التحضير:** ترتيب حسب وقت التحضير، نوع الطبخ، معدات المطبخ، ومتطلبات الفصل لمنع التلوث التبادلي.
+5. **الوزن والتعبئة:** تسجيل الوزن الفعلي لكل مكوّن أو حصة، مع سماحية تشغيلية معتمدة ومعلنة.
+6. **مراقبة الجودة:** فحص الهوية، المكونات، مسببات الحساسية، درجة الحرارة، الإغلاق، والملصق قبل التسليم.
+7. **التسليم للسائق:** إنشاء manifest للطلبات حسب المنطقة، تسجيل وقت الاستلام، وإثبات التسليم.
+8. **إغلاق اليوم:** مطابقة الطلبات والمخزون والهدر والإلغاءات، ثم إعداد تقرير تشغيلي.
+
+## 3. الأدوار والصلاحيات
+
+| الدور | الصلاحيات المستهدفة |
+|---|---|
+| العميل | ملفه، خطته، وجباته، طلباته، ومدفوعاته فقط |
+| الإدارة | العملاء والكتالوج والتسعير والسعة والطلبات والتقارير |
+| المطبخ | الطلبات المؤكدة وقوائم التحضير والوزن والجودة فقط |
+| التوصيل | الطلبات المسندة إليه ومعلومات التسليم الضرورية فقط |
+
+يجب فرض هذه الصلاحيات في API وقاعدة البيانات، وليس عبر إخفاء أزرار الواجهة. لا يحق للمطبخ تغيير ملف العميل الصحي أو السعر الأصلي للطلب.
+
+## 4. سجلات يجب حفظها
+
+- ملف العميل وموافقات الخصوصية.
+- نسخة الحساب الغذائي: المدخلات، المحرك، الإصدار، المصادر، والنتائج.
+- مصدر كل قيمة غذائية، حالة الطعام، الجزء المأكول، وعامل مردود الطهي.
+- نسخة ثابتة من الوصفة والسعر عند إنشاء الطلب.
+- سجل حالات الطلب مع المستخدم والوقت والسبب.
+- حركة المخزون: استلام، حجز، استهلاك، هدر، وتسوية.
+- سجل دفعات التحضير وفحوص الجودة والتسليم.
+
+## 5. شروط قبول النسخة التشغيلية
+
+لا تُعلن الخدمة جاهزة حتى تتحقق جميع النقاط التالية:
+- مصادقة خادمية وصلاحيات منفصلة واختبار منع الوصول الأفقي.
+- قاعدة بيانات مشتركة ونسخ احتياطي وسجل تدقيق.
+- اختبارات حسابات غذائية واختبارات تكامل للطلبات والمخزون.
+- بيانات غذائية موثقة لكل صنف مستخدم تجارياً، مع النيء/المطبوخ والمردود.
+- مراجعة مختص تغذية وسلامة غذاء للإجراءات والملصقات.
+- اعتماد مناطق التوصيل والأسعار والموعد النهائي والطاقة الفعلية.
+- اختبار دورة طلب كاملة من العميل إلى المطبخ ثم السائق وإثبات التسليم.
+
+## 6. ما هو منفذ الآن وما ليس منفذاً
+
+**منفذ في الواجهة التجريبية:** إدخال بيانات، حاسبة أولية، اختيار أصناف وأوزان، حساب تكلفة تقديري، حساسية أساسية، حفظ محلي، وجورنال وزن.
+
+**غير منفذ بعد:** حسابات مستخدمين حقيقية، خادم، قاعدة بيانات مشتركة، تحقق مخزون حقيقي، إدارة دفعات المطبخ، تتبع وزن فعلي، الدفع، تكامل التوصيل، إشعارات، سجل تدقيق، ومزامنة الأجهزة.
+
+
+==========================================================================================
+FILE: docs/PREMIUM_PRODUCT_EXPERIENCE.md
+==========================================================================================
+# NutriFit DZ — Premium Product Experience Specification
+
+Status: design authority for the redesign branch  
+Scope: end-to-end customer, kitchen, operations and delivery experience  
+Principle: quiet luxury, scientific transparency, operational clarity
+
+## 1. Product position
+
+NutriFit DZ is a high-touch, made-to-order nutrition service. It is not a calorie tracker, a discount meal marketplace, or a crowded food-delivery catalog. The product should feel closer to a premium hospitality concierge with the rigor of a nutrition platform.
+
+Design priorities, in order:
+1. Trust and correctness.
+2. Clarity at every decision.
+3. Low-friction interaction on a phone.
+4. Premium restraint and food appetite appeal.
+5. Operational traceability.
+6. Delight through feedback and motion, never decoration that slows work.
+
+Do not use popularity, social proof, urgency counters, fake scarcity, invented reviews, or unsupported nutrition claims as persuasion.
+
+## 2. Visual direction
+
+### Brand concept: Modern Nutrition Atelier
+
+Use a warm, tactile, editorial visual language. Avoid the generic black-and-gold luxury cliché and avoid loud fitness neon.
+
+Core palette:
+- Porcelain / page: #F5F3ED
+- White surface: #FFFEFB
+- Ink / primary text: #202722
+- Deep evergreen / primary brand: #24483D
+- Muted sage / secondary: #87978A
+- Soft stone / separators: #E5E1D7
+- Brass / restrained accent: #B28A56
+- Terracotta / caution: #B86F55
+- Success: #47745B
+- Critical: #A94F48
+
+Rules:
+- Food photography supplies most saturated color.
+- Evergreen is for primary actions and selected states, not every panel.
+- Brass is a small accent for craft, progress, and premium details; never use it for long body text.
+- Red is reserved for destructive or critical states.
+- Use warm off-white as the default customer canvas. Dark surfaces may be used selectively for immersive photography or focused dashboards, not as the entire default interface.
+- Maintain WCAG AA contrast for text and controls.
+
+### Typography
+- Arabic-first typography with a highly legible Arabic sans stack. Prefer a bundled/open-licensed family only after confirming it loads reliably; system fallback must remain excellent.
+- Body copy: 15–16px mobile, line-height 1.65–1.75.
+- Secondary metadata: never below 12px; critical prices/macros must not be tiny.
+- Page title: 26–32px mobile, 34–42px desktop.
+- Section title: 18–22px.
+- Numeric values use tabular numerals and consistent units.
+- Avoid excessive uppercase English labels and letter-spaced decorative microcopy.
+
+### Spacing and geometry
+Use a 4px base spacing scale, with 8px as the common rhythm.
+- Mobile page gutters: 18–20px; compact minimum 16px.
+- Desktop content max width: 1200–1280px.
+- Card padding: 18–24px.
+- Section spacing: 28–40px.
+- Control height: 48–52px minimum.
+- Icon-only controls: 48px minimum hit area.
+- Card radius: 16–20px; sheets/dialogs: 24px top radius on mobile.
+- Borders are subtle; use elevation only to clarify hierarchy.
+- Never squeeze important information into narrow 3-column mobile layouts if labels become clipped.
+
+## 3. Motion and interaction language
+
+Motion must explain cause and effect:
+- Tap feedback: 100–160ms.
+- State transitions: 180–260ms.
+- Sheet/modal transitions: 240–320ms with restrained easing.
+- Add-to-plan: short visual confirmation, count update, and a clear undo opportunity.
+- Changing grams updates nutrition and price immediately, with a subtle number transition; no layout jump.
+- Selected cards show a clear border, filled check state and text label; selection must not rely on color alone.
+- Loading uses skeletons matching final geometry, not spinners for whole pages.
+- Toasts are short, positioned away from the bottom navigation and device gesture area.
+- Respect prefers-reduced-motion and provide a fully usable reduced-motion experience.
+- Never animate essential content out from under the user's finger.
+
+## 4. Information architecture
+
+Customer navigation has four stable destinations:
+1. Today — personal overview, plan status, next delivery and a single primary action.
+2. Build plan — meals, food discovery, customization and daily nutrition balance.
+3. Orders — order history, current order, delivery status and receipts.
+4. Account — profile, health screening, preferences, allergens, addresses and support.
+
+Do not make the cart a competing primary destination. The plan builder owns a persistent, clearly labeled plan summary and a review action. The final review is a distinct step before order confirmation.
+
+Staff experiences are separate role-based workspaces:
+- Admin: catalog, evidence/source records, prices, capacity, customers, orders, zones, reporting and audit trail.
+- Kitchen: production queue, batch totals, ingredient pick/scale, preparation, packing and handoff.
+- Delivery: assigned routes, recipient details, delivery window, status and proof of handoff.
+
+Never expose staff navigation to customers or rely on hidden buttons as authorization. Server-side role checks are mandatory.
+
+## 5. Customer journey and transition contract
+
+### A. First visit
+Landing → service explanation → create account / sign in.
+Explain what the service does, how food is weighed, how plans are calculated, cutoff times only when configured, and what is not yet available. Do not use a long marketing wall.
+
+### B. Account and suitability
+Create account → identity/contact → health and safety screening → profile.
+Ask only information needed for the next calculation. Use progressive disclosure. Health flags and allergens must be explicit and reviewable. Do not imply medical diagnosis or treatment.
+
+### C. Nutrition profile
+Profile inputs → activity/goal selection → calculation review → save profile.
+Show the method, assumptions, units and source confidence. Clearly separate measured facts, formula outputs, reference ranges, operational choices and calibration assumptions (F/R/O/C). Allow back navigation without losing valid input.
+
+### D. Plan builder
+Select number of meals → choose meal slot → browse/search/filter foods → inspect item → set grams → add to meal → review meal → repeat → daily plan review.
+The builder should preserve context: returning from an item returns to the same meal slot, category, search and scroll position.
+
+### E. Food quantity interaction — critical pattern
+On mobile, opening an item launches a bottom sheet with:
+1. A compact item identity row and food state (raw/cooked/as sold).
+2. A persistent nutrition-and-price summary ABOVE the quantity controls.
+3. A large, thumb-friendly grams stepper below that summary.
+4. Optional direct numeric entry with unit shown.
+5. Portion/source details and allergens in a scrollable content region.
+6. A persistent bottom action area with the updated price and “Add to meal”.
+
+The live summary must remain visible while grams are changed. The user's thumb must never cover the only display of price, kcal, protein, carbs or fat. The sheet body may scroll, but summary and primary action stay anchored. On desktop, use a centered side panel with the same hierarchy.
+
+Every gram change must update from the same authoritative calculation:
+- displayed grams
+- kcal and macros
+- price
+- meal subtotal
+- daily plan totals and remaining target
+No optimistic fake values, no delayed stale labels, no silent rounding that changes the selected amount. Define supported increments and bounds per food type. Show raw/cooked basis clearly. Juice/liquid units must not be mislabeled as grams.
+
+### F. Review and order
+Daily plan review → nutrition validation → price breakdown → delivery/pickup choice → date/time availability → contact/address confirmation → terms and final confirmation.
+Never create a real order until server validation succeeds. Show all fees before confirmation. If the cutoff passes or capacity changes, explain and offer a valid next option rather than silently changing the date.
+
+### G. Order lifecycle
+Submitted → awaiting confirmation (if manual review is required) → confirmed → scheduled → in preparation → quality check → packed → handed to delivery / ready for pickup → out for delivery → delivered → closed.
+Cancellation, waitlist, failed delivery and refund states must have explicit transitions and reasons. Customer sees plain-language status; staff sees operational detail. The order cannot be marked delivered by the customer UI.
+
+### H. End-of-day and account closure
+Daily operations close only after all orders, production quantities, inventory movements, handoffs, exceptions and cash/payment reconciliation are accounted for. Account deletion/export and service shutdown are distinct flows with confirmation, retention policy and audit record. Never erase financial or safety records contrary to legal retention requirements.
+
+## 6. Component standards
+
+- Buttons: one dominant primary action per view; secondary actions outlined or quiet; destructive action separated.
+- Inputs: persistent labels, inline validation, clear units and helpful error copy.
+- Cards: consistent title, status, metadata and action positions.
+- Food cards: appetite-led image, clear name, preparation state, concise description, price basis and verified nutrition status.
+- Nutrition: show per-portion and per-100g basis explicitly; never mix them.
+- Status: text + icon + color, never color alone.
+- Empty states: explain why empty and provide one next action.
+- Error states: explain what happened, whether data was saved, and the recovery action.
+- Confirmation dialogs: reserve for irreversible or high-impact actions; don't interrupt routine edits.
+
+## 7. Responsive behavior
+
+Mobile-first:
+- Single-column reading flow.
+- Bottom navigation safe-area aware.
+- Sheets respect viewport height and keyboard; inputs remain visible.
+- Sticky summary/action bars never overlap content or device controls.
+- Touch targets at least 48px with adequate spacing.
+- No hover-only affordances.
+
+Tablet:
+- Two-column layout only when it improves comparison and keeps actions close to context.
+
+Desktop:
+- Wider content with controlled line length.
+- Persistent contextual summary where useful.
+- Staff dashboards may use tables and multi-column workspaces, with responsive card fallback.
+
+## 8. Accessibility and localization
+
+- Full Arabic RTL, including mixed numerals, currency, dates, icons and directional controls.
+- Keyboard navigation and visible focus.
+- Semantic headings, labels and button names.
+- Contrast target WCAG 2.2 AA.
+- Screen-reader announcements for quantity changes and cart/plan updates.
+- Reduced-motion support.
+- Arabic copy is concise, respectful and operationally clear; no awkward machine-translated strings.
+- DZD formatting is consistent and must be based on configured prices.
+
+## 9. Trust, scientific integrity and operational safeguards
+
+- Never present demo seed prices, foods, delivery zones, capacity or cutoff times as live commercial facts.
+- A food is not “verified” without a traceable source record and matching preparation basis.
+- Keep raw and cooked foods distinct.
+- Nutrition and price calculations must have tests and one authoritative source of truth.
+- Use F/R/O/C classification for every nutrition number and expose methodology when relevant.
+- Revalidate price, allergens, stock, capacity, schedule and user authorization on the server at order submission.
+- Use idempotency for order creation; prevent duplicate submissions.
+- Maintain audit events for admin changes and order state changes.
+- Keep personal health data out of public logs and analytics.
+
+## 10. Quality gates
+
+A phase is not complete until:
+- the primary journey can be completed on a narrow mobile viewport;
+- all interactive states have loading, success, empty and error handling;
+- back navigation preserves context;
+- touch targets and sticky regions are checked on an actual phone;
+- nutrition and price values match tested calculation functions;
+- no demo data is represented as live;
+- role boundaries are verified server-side;
+- build, typecheck and relevant automated tests pass.
+
+Release is blocked by white screens, broken routes, inaccessible controls, stale price/nutrition totals, duplicate orders, unverified live catalog data, or an unconfigured production backend.
+
+## 11. Research references informing this specification
+
+- Baymard Institute, Food Delivery & Takeout UX research: https://baymard.com/research/online-food-delivery
+- Baymard Institute, Food Delivery UX research and audit coverage: https://baymard.com/industries/food-delivery-and-takeout-ux
+- Sakara app case study, calendar-led meal plans and swap flows: https://fueled.com/work/sakara/
+- Toptal, food app design: imagery, simplicity and visual hierarchy: https://www.toptal.com/designers/ux/food-app-design
+
+These references inform patterns and evaluation criteria; NutriFit's interface must be designed around its own gram-based nutrition and kitchen workflow, not copied from a competitor.
+
